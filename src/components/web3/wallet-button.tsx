@@ -11,15 +11,16 @@ export function WalletButton() {
   if (isConnected) {
     return (
       <button
+        aria-label={`Disconnect wallet ${compactAddress(address)}`}
         className="wallet-button wallet-connected"
         onClick={() => disconnect()}
         title="Disconnect wallet"
       >
         <span className="wallet-status">
-          <Check size={12} />
+          <Check aria-hidden size={12} />
         </span>
         {compactAddress(address)}
-        <LogOut className="wallet-hover-icon" size={14} />
+        <LogOut aria-hidden className="wallet-hover-icon" size={14} />
       </button>
     )
   }
@@ -30,9 +31,9 @@ export function WalletButton() {
       disabled={!connector || isPending}
       onClick={() => connector && connect({ connector })}
     >
-      <Wallet size={15} />
+      <Wallet aria-hidden size={15} />
       {isPending ? "Opening…" : "Connect"}
-      <ChevronDown size={13} />
+      <ChevronDown aria-hidden size={13} />
     </button>
   )
 }

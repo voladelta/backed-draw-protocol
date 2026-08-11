@@ -8,7 +8,7 @@ export function RewardsPage() {
     ["18", "You", "24,810"],
   ]
   return (
-    <main className="content-page rewards-page">
+    <div className="content-page rewards-page">
       <div className="page-kicker">Season 01 · 43 days left</div>
       <h1>Rewards</h1>
       <p className="page-lede">Every draw, deposit, and referral moves you forward.</p>
@@ -57,7 +57,7 @@ export function RewardsPage() {
           </div>
         ))}
       </section>
-    </main>
+    </div>
   )
 }
 

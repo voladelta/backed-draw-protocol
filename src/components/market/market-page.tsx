@@ -5,7 +5,7 @@ import { formatValue } from "@/lib/utils"
 /** Kept as a typed embeddable market detail for integrations outside the primary pull route. */
 export function MarketPage({ market, onPull }: { market: Market; onPull: () => void }) {
   return (
-    <main className="support-page">
+    <div className="support-page">
       <p className="support-eyebrow">{market.asset} settlement pool</p>
       <h1>{market.name}</h1>
       <section className="market-detail">
@@ -21,6 +21,6 @@ export function MarketPage({ market, onPull }: { market: Market; onPull: () => v
           </button>
         </div>
       </section>
-    </main>
+    </div>
   )
 }

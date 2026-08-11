@@ -2,16 +2,22 @@
 
 :root {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: #f6f8f1;
-  background: #080a09;
-  font-synthesis: none;
+  color: oklch(0.96 0.02 125);
+  background: oklch(0.14 0.025 145);
+  color-scheme: dark;
   text-rendering: optimizeLegibility;
-  --lime: #caff3a;
-  --ink: #080a09;
-  --surface: #111411;
-  --surface-2: #171b16;
-  --line: rgba(237, 249, 225, 0.11);
-  --muted: #91988e;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --lime: oklch(0.91 0.22 112);
+  --lime-soft: oklch(0.86 0.16 112);
+  --ink: oklch(0.14 0.025 145);
+  --ink-deep: oklch(0.105 0.02 145);
+  --surface: oklch(0.19 0.03 145);
+  --surface-2: oklch(0.23 0.035 145);
+  --surface-3: oklch(0.27 0.04 145);
+  --line: oklch(0.88 0.03 140 / 0.13);
+  --muted: oklch(0.74 0.03 140);
+  --subtle: oklch(0.63 0.03 140);
 }
 * {
   box-sizing: border-box;
@@ -24,12 +30,17 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  color: oklch(0.96 0.02 125);
+  font-size: 1rem;
+  line-height: 1.5;
   background:
-    radial-gradient(ellipse 55% 36% at 50% -6%, rgba(202, 255, 58, 0.1), transparent 75%),
+    radial-gradient(ellipse 55% 36% at 50% -6%, oklch(0.91 0.22 112 / 0.11), transparent 75%),
     var(--ink);
 }
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 button {
@@ -44,6 +55,8 @@ button:disabled {
 img {
   display: block;
   max-width: 100%;
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
 }
 a {
   color: inherit;
@@ -51,25 +64,97 @@ a {
 }
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+summary:focus-visible,
+[tabindex="0"]:focus-visible {
   outline: 2px solid var(--lime);
   outline-offset: 3px;
+}
+.app-shell {
+  min-height: 100vh;
+  color: oklch(0.96 0.02 125);
+  background: var(--ink);
+}
+.app-shell-glow {
+  background: radial-gradient(
+    ellipse 70% 50% at 50% -10%,
+    oklch(0.91 0.22 112 / 0.12),
+    transparent 72%
+  );
 }
 .app-main {
   min-height: calc(100vh - 72px);
   max-width: none !important;
   padding: 0 !important;
 }
+.skip-link {
+  position: fixed;
+  z-index: 60;
+  top: 12px;
+  inset-inline-start: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--lime);
+  color: var(--ink-deep);
+  font-size: 0.875rem;
+  font-weight: 750;
+  transform: translateY(-150%);
+  transition: transform 150ms ease-out;
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+.site-header {
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklch, var(--ink) 86%, transparent);
+  backdrop-filter: blur(20px) saturate(130%);
+}
+.site-header-inner {
+  min-height: 72px;
+}
+.site-nav a {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition-property: background-color, color;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.site-nav a[aria-current="page"] {
+  background: oklch(1 0 0 / 0.09);
+  color: oklch(0.98 0.01 125);
+}
+.site-nav a:hover {
+  background: oklch(1 0 0 / 0.06);
+  color: oklch(0.98 0.01 125);
+}
+.mobile-nav-menu {
+  border-color: var(--line);
+  background: color-mix(in oklch, var(--surface) 94%, transparent);
+  backdrop-filter: blur(20px) saturate(130%);
+}
+.mobile-nav-trigger {
+  min-width: 40px;
+  min-height: 40px;
+}
+.mobile-nav-menu a[aria-current="page"] {
+  background: oklch(1 0 0 / 0.09);
+  color: oklch(0.98 0.01 125);
+}
 .wallet-button {
-  min-height: 38px;
+  min-height: 40px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
   padding: 0 12px;
   border: 1px solid rgba(202, 255, 58, 0.36);
   border-radius: 999px;
-  background: rgba(202, 255, 58, 0.08);
-  color: #e9f5d8;
+  background: oklch(0.91 0.22 112 / 0.09);
+  color: oklch(0.94 0.04 125);
   font-size: 11px;
   font-weight: 750;
   transition:
@@ -77,10 +162,10 @@ input:focus-visible {
     background 0.15s ease-out;
 }
 .wallet-button:hover {
-  background: rgba(202, 255, 58, 0.16);
+  background: oklch(0.91 0.22 112 / 0.16);
 }
 .wallet-button:active {
-  transform: scale(0.975);
+  transform: scale(0.96);
 }
 .wallet-button:disabled {
   opacity: 0.5;
@@ -462,7 +547,7 @@ input:focus-visible {
   box-shadow: 0 12px 36px rgba(202, 255, 58, 0.22);
 }
 .pull-cta:active {
-  transform: scale(0.975);
+  transform: scale(0.96);
 }
 .pull-cta svg {
   width: 16px;
@@ -1306,7 +1391,7 @@ input:focus-visible {
   background: rgba(202, 255, 58, 0.07);
 }
 .settlement-actions button:active {
-  transform: scale(0.985);
+  transform: scale(0.96);
 }
 .settlement-actions button > svg:first-child {
   width: 16px;
@@ -2381,6 +2466,263 @@ input:focus-visible {
     font-size: 40px;
   }
 }
+
+/* Cross-route interface refinement */
+:where(h1, h2, h3) {
+  text-wrap: balance;
+}
+:where(p) {
+  overflow-wrap: break-word;
+  text-wrap: pretty;
+}
+.gacha-page {
+  width: min(1600px, calc(100% - 48px));
+  padding-top: 24px;
+}
+.pool-tabs-scroll,
+.recent-pulls {
+  border-color: oklch(0.88 0.03 140 / 0.15);
+  background: color-mix(in oklch, var(--surface) 70%, transparent);
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.12),
+    0 18px 48px oklch(0 0 0 / 0.12);
+}
+.pool-tabs button {
+  min-height: 68px;
+  transition-property: background-color, color, transform;
+}
+.pool-tabs button:active,
+.settlement-actions button:active,
+.count-control button:active,
+.pull-cta:active {
+  transform: scale(0.96);
+}
+.gacha-shell {
+  gap: 18px;
+}
+.gacha-arena,
+.gacha-shell > .pull-command {
+  border-color: oklch(0.88 0.03 140 / 0.15);
+  border-radius: 24px;
+}
+.gacha-arena {
+  min-height: 640px;
+  background:
+    radial-gradient(circle at 50% 36%, oklch(0.91 0.22 112 / 0.13), transparent 31%),
+    linear-gradient(180deg, oklch(0.19 0.035 145), var(--ink-deep) 74%);
+  box-shadow:
+    inset 0 1px oklch(1 0 0 / 0.05),
+    0 24px 70px oklch(0 0 0 / 0.16);
+}
+.gacha-shell > .pull-command {
+  min-height: 640px;
+  background:
+    radial-gradient(circle at 50% 0, oklch(0.91 0.22 112 / 0.1), transparent 30%),
+    linear-gradient(160deg, var(--surface-2), var(--ink-deep));
+  box-shadow: 0 24px 70px oklch(0 0 0 / 0.18);
+}
+.pull-command {
+  padding: 24px;
+}
+.command-heading h2,
+.command-state > h2 {
+  font-weight: 650;
+  text-wrap: balance;
+}
+.command-price {
+  border-color: oklch(0.88 0.03 140 / 0.1);
+  background: oklch(0.1 0.02 145 / 0.42);
+}
+.command-price strong,
+.command-total strong {
+  font-variant-numeric: tabular-nums;
+}
+.count-control button {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.count-control button:not(:disabled):hover {
+  background: var(--surface-3);
+}
+.asset-switch {
+  gap: 8px;
+}
+.asset-switch button {
+  min-height: 44px;
+  border-radius: 11px;
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.asset-switch button:active {
+  transform: scale(0.96);
+}
+.pull-cta {
+  min-height: 52px;
+  border-radius: 14px;
+  transition-property: background-color, box-shadow, transform;
+}
+.settlement-actions {
+  gap: 9px;
+}
+.settlement-actions button {
+  min-height: 58px;
+  border-radius: 13px;
+  background: oklch(1 0 0 / 0.035);
+  transition-property: background-color, border-color, transform;
+}
+.settlement-actions button:hover {
+  background: oklch(0.91 0.22 112 / 0.08);
+}
+.recent-pulls {
+  border-radius: 18px;
+}
+.recent-pulls-heading {
+  min-height: 56px;
+  padding-inline: 18px;
+}
+.recent-pulls-scroll {
+  scrollbar-gutter: stable both-edges;
+}
+.recent-pulls img,
+.support-market img,
+.activity-list img,
+.market-detail img,
+.manage-image img {
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
+}
+.support-page {
+  padding-top: 72px;
+}
+.support-page h1 {
+  max-width: 15ch;
+  line-height: 1.02;
+  text-wrap: balance;
+}
+.support-market,
+.activity-summary > div,
+.reward-stat,
+.position-management,
+.market-detail,
+.how-steps,
+.how-outcomes,
+.how-ledger > div {
+  border-color: oklch(0.88 0.03 140 / 0.14);
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.08),
+    0 18px 50px oklch(0 0 0 / 0.12);
+}
+.support-market,
+.reward-stat,
+.activity-summary > div {
+  transition-property: border-color, box-shadow, transform;
+  transition-duration: 180ms;
+  transition-timing-function: ease-out;
+}
+.support-market button,
+.info-banner button,
+.backer-tip button,
+.reward-spotlight button,
+.market-detail button {
+  min-height: 40px;
+  padding-block: 8px;
+  border-radius: 9px;
+  transition-property: color, background-color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.support-market button:hover,
+.info-banner button:hover,
+.backer-tip button:hover,
+.reward-spotlight button:hover,
+.market-detail button:hover {
+  background: oklch(0.91 0.22 112 / 0.08);
+}
+.support-market button:active,
+.info-banner button:active,
+.backer-tip button:active,
+.reward-spotlight button:active,
+.market-detail button:active {
+  transform: scale(0.96);
+}
+.activity-list button {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  transition-property: border-color, background-color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.activity-list button:hover {
+  border-color: oklch(0.91 0.22 112 / 0.45);
+  background: oklch(0.91 0.22 112 / 0.08);
+}
+.position-actions button {
+  min-height: 40px;
+  border-radius: 9px;
+  transition-property: border-color, background-color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.position-actions button:hover {
+  border-color: oklch(0.91 0.22 112 / 0.45);
+  background: oklch(0.91 0.22 112 / 0.07);
+}
+.position-actions button:active {
+  transform: scale(0.96);
+}
+.market-search-label input {
+  min-height: 44px;
+}
+@media (max-width: 980px) {
+  .gacha-arena {
+    min-height: min(68vh, 610px);
+  }
+  .gacha-shell > .pull-command {
+    min-height: 0;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .support-market:hover,
+  .reward-stat:hover,
+  .activity-summary > div:hover {
+    border-color: oklch(0.91 0.22 112 / 0.28);
+    box-shadow:
+      0 0 0 1px oklch(0.91 0.22 112 / 0.08),
+      0 22px 60px oklch(0 0 0 / 0.18);
+    transform: translateY(-2px);
+  }
+}
+
+@media (max-width: 560px) {
+  .gacha-page {
+    width: min(100% - 32px, 520px);
+    padding-top: 16px;
+  }
+  .gacha-arena {
+    min-height: 440px;
+  }
+  .gacha-arena,
+  .gacha-shell > .pull-command {
+    border-radius: 18px;
+  }
+}
+
+@media (max-width: 450px) {
+  .gacha-page {
+    width: min(100% - 24px, 520px);
+  }
+  .pull-command {
+    padding: 20px;
+  }
+  .gacha-arena {
+    min-height: 420px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -2389,5 +2731,10 @@ input:focus-visible {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+@media (forced-colors: active) {
+  :where(button, a, input, summary, [tabindex="0"]):focus-visible {
+    outline: 2px solid CanvasText;
   }
 }

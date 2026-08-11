@@ -5,7 +5,7 @@ import { formatValue } from "@/lib/utils"
 export function PortfolioPage({ onExplore }: { onExplore: () => void }) {
   const position = markets[0].positions[2]
   return (
-    <main className="content-page">
+    <div className="content-page">
       <div className="page-kicker">Your vault</div>
       <h1>Portfolio</h1>
       <p className="page-lede">Deposits, earnings, and draw rights in one place.</p>
@@ -99,6 +99,6 @@ export function PortfolioPage({ onExplore }: { onExplore: () => void }) {
           <button className="secondary-action">View Crown</button>
         </section>
       </div>
-    </main>
+    </div>
   )
 }

@@ -51,17 +51,17 @@ export function ExplorePage({
   )
 
   return (
-    <div className={cn("space-y-10 sm:space-y-14", className)}>
+    <div className={cn("explore-page space-y-10 sm:space-y-14", className)}>
       <section className="grid items-end gap-8 lg:grid-cols-[minmax(0,1fr)_auto]">
         <div className="max-w-3xl">
           <Badge dot variant="success">
             Verifiable draws, live now
           </Badge>
           <h1 className="mt-5 text-4xl font-semibold leading-[0.96] tracking-[-0.06em] text-white sm:text-5xl lg:text-6xl">
-            Collectibles, with a <span className="text-lime-300">draw</span> to them.
+            Back a collectible. Enter the <span className="text-lime-300">draw</span>.
           </h1>
           <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400 sm:text-lg">
-            Back an NFT to earn on every pull, or draw a position at a transparent pool-derived
+            Deposit an NFT to earn from every pull, or enter a draw at a transparent pool-derived
             price. Each market settles in one asset.
           </p>
         </div>
@@ -88,20 +88,24 @@ export function ExplorePage({
               Explore active markets
             </h2>
           </div>
-          <label className="relative block w-full sm:w-[272px]">
-            <Search
-              aria-hidden
-              className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-500"
-            />
-            <span className="sr-only">Search markets</span>
-            <input
-              className="h-10 w-full rounded-xl border border-white/[0.1] bg-white/[0.04] pl-10 pr-4 text-sm text-white outline-none placeholder:text-slate-600 transition-[border-color,box-shadow,background-color] duration-150 focus:border-lime-300/50 focus:bg-white/[0.06] focus:ring-2 focus:ring-lime-300/10"
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                onSearchChange?.(event.target.value)
-              }
-              placeholder="Search collections"
-              value={searchValue}
-            />
+          <label className="market-search-label block w-full sm:w-[272px]">
+            <span className="mb-2 block text-xs font-semibold text-slate-400">Search markets</span>
+            <span className="relative block">
+              <Search
+                aria-hidden
+                className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-500"
+              />
+              <input
+                aria-label="Search markets"
+                className="h-10 w-full rounded-xl border border-white/[0.1] bg-white/[0.04] pl-10 pr-4 text-sm text-white outline-none placeholder:text-slate-600 transition-[border-color,box-shadow,background-color] duration-150 focus:border-lime-300/50 focus:bg-white/[0.06] focus:ring-2 focus:ring-lime-300/10"
+                id="market-search"
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  onSearchChange?.(event.target.value)
+                }
+                placeholder="Try CryptoPunks or Azuki"
+                value={searchValue}
+              />
+            </span>
           </label>
         </div>
 
@@ -135,6 +139,9 @@ export function ExplorePage({
           </button>
         </div>
 
+        <p aria-live="polite" className="sr-only" role="status">
+          {visibleMarkets.length} {visibleMarkets.length === 1 ? "market" : "markets"} shown
+        </p>
         {visibleMarkets.length ? (
           <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {visibleMarkets.map((market) => (
@@ -148,6 +155,17 @@ export function ExplorePage({
               <p className="mt-1 text-sm text-slate-500">
                 Try another settlement asset or clear your search.
               </p>
+              <Button
+                className="mt-4"
+                onClick={() => {
+                  onAssetChange?.("all")
+                  onSearchChange?.("")
+                }}
+                size="sm"
+                variant="secondary"
+              >
+                Clear filters
+              </Button>
             </div>
           </div>
         )}

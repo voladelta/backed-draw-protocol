@@ -18,7 +18,7 @@ import { formatValue } from "@/lib/utils"
 
 export function PoolsPage({ onPull }: { onPull: (marketId: string) => void }) {
   return (
-    <PageFrame eyebrow="All live pools" title="What’s inside the draw.">
+    <PageFrame eyebrow="All live pools" title="Explore live pools.">
       <div className="support-grid market-list">
         {markets.map((market) => (
           <article className="support-market" key={market.id}>
@@ -98,7 +98,7 @@ export function ActivityPage() {
 export function BackerPage({ onPull }: { onPull: () => void }) {
   const position = markets[0].positions[2]
   return (
-    <PageFrame eyebrow="Backer vault" title="Make your collection work.">
+    <PageFrame eyebrow="Backer vault" title="Put your collection to work.">
       <section className="backer-overview">
         <div>
           <p>Total position value</p>
@@ -327,11 +327,11 @@ function PageFrame({
   children: React.ReactNode
 }) {
   return (
-    <main className="support-page">
+    <div className="support-page">
       <p className="support-eyebrow">{eyebrow}</p>
       <h1>{title}</h1>
       {children}
-    </main>
+    </div>
   )
 }
 function Reward({

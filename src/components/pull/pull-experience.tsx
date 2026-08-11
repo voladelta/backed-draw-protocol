@@ -63,7 +63,8 @@ export function PullExperience(props: PullExperienceProps) {
   }, [props.stage])
 
   return (
-    <main className="gacha-page">
+    <div className="gacha-page">
+      <h1 className="sr-only">Pull a collectible from {props.market.name}</h1>
       <PoolTabs activeMarketId={props.market.id} onMarketChange={props.onMarketChange} />
       <section
         aria-label={`${props.market.name} collectible pull machine`}
@@ -83,7 +84,16 @@ export function PullExperience(props: PullExperienceProps) {
         <PullCommand {...props} key={props.market.id} position={revealedPosition} />
       </section>
       <RecentPulls />
-    </main>
+      <p aria-live="polite" className="sr-only" role="status">
+        {props.stage === "configure"
+          ? `${props.market.name} pull ready. ${props.count} ${props.count === 1 ? "pull" : "pulls"} selected.`
+          : props.stage === "drawing"
+            ? "Your pull is being verified against the committed pool root."
+            : props.stage === "revealed"
+              ? `${revealedPosition?.name ?? "A position"} revealed. Choose a settlement option.`
+              : `${revealedPosition?.name ?? "Your position"} settlement complete.`}
+      </p>
+    </div>
   )
 }
 
@@ -376,7 +386,7 @@ function PullCommand({
   }
   if (stage === "drawing")
     return (
-      <aside className="pull-command command-state">
+      <aside aria-live="polite" className="pull-command command-state">
         <Dices />
         <p>{livePending ? "Pull order submitted" : "Randomness requested"}</p>
         <h2>{livePending ? "Waiting for epoch result…" : "Finding your position…"}</h2>
@@ -398,11 +408,11 @@ function PullCommand({
     )
   if (stage === "revealed" && position)
     return (
-      <aside className="pull-command settlement-command">
+      <aside aria-labelledby="settlement-heading" className="pull-command settlement-command">
         <div className="command-heading">
           <div>
             <p>Choose settlement</p>
-            <h2>{position.name}</h2>
+            <h2 id="settlement-heading">{position.name}</h2>
           </div>
           <span className="asset-chip">24h</span>
         </div>
@@ -422,7 +432,7 @@ function PullCommand({
             ? "Position relisted"
             : "Collectible secured"
     return (
-      <aside className="pull-command command-state settlement-done">
+      <aside aria-live="polite" className="pull-command command-state settlement-done">
         <CircleCheck />
         <p>Pull complete</p>
         <h2>{label}</h2>
@@ -489,8 +499,19 @@ function PullCommand({
         <strong>{formatValue(paymentTotal * 1.005, paymentAsset)}</strong>
         <small>0.5% slippage protection · unused funds return</small>
       </div>
-      {error ? <p className="command-error">{error}</p> : null}
-      <button className="pull-cta" disabled={isPending} onClick={requestPull} type="button">
+      {error ? (
+        <p className="command-error" id="pull-error" role="alert">
+          Unable to submit the pull. {error}
+        </p>
+      ) : null}
+      <button
+        aria-busy={isPending}
+        aria-describedby={error ? "pull-error" : undefined}
+        className="pull-cta"
+        disabled={isPending}
+        onClick={requestPull}
+        type="button"
+      >
         <Sparkles />{" "}
         {isPending ? "Check wallet…" : canSubmit ? "Sign and pull" : "Run preview pull"}
       </button>

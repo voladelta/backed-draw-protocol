@@ -9,6 +9,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant
   size?: ButtonSize
   loading?: boolean
+  static?: boolean
   children?: ReactNode
 }
 
@@ -36,6 +37,7 @@ export function Button({
   variant = "primary",
   size = "md",
   loading = false,
+  static: staticMotion = false,
   disabled,
   children,
   type = "button",
@@ -44,20 +46,21 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-xl font-semibold tracking-[-0.01em] transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-out active:scale-[0.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
+        "inline-flex shrink-0 items-center justify-center rounded-xl font-semibold tracking-[-0.01em] transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-out disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
+        !staticMotion && "active:scale-[0.96]",
         variantClasses[variant],
         sizeClasses[size],
         className,
       )}
       disabled={disabled || loading}
+      aria-busy={loading || undefined}
       type={type}
       {...props}
     >
       {loading ? (
         <span
-          aria-label="Loading"
+          aria-hidden="true"
           className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-          role="status"
         />
       ) : null}
       {children}

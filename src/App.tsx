@@ -44,7 +44,7 @@ function RootLayout() {
       onClick: () => navigate({ to: "/rewards" }),
     },
     {
-      label: "How It works",
+      label: "How it works",
       href: "/how-it-works",
       active: pathname === "/how-it-works",
       onClick: () => navigate({ to: "/how-it-works" }),

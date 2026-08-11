@@ -1,0 +1,699 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
+import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
+import { MarketVault } from "./MarketVault.sol";
+import { SettlementEngine } from "./SettlementEngine.sol";
+import { EpochCoordinator } from "./EpochCoordinator.sol";
+import { PositionNFT } from "./tokens/PositionNFT.sol";
+import { WeightedTree } from "./libraries/WeightedTree.sol";
+import { ProtocolTypes } from "./types/ProtocolTypes.sol";
+import { IEligibilityPolicy } from "./interfaces/IEligibilityPolicy.sol";
+import { IRewardController } from "./interfaces/IRewardController.sol";
+import { IProtocolRegistry } from "./interfaces/IProtocolRegistry.sol";
+
+contract DrawMarket is AccessControl, ReentrancyGuard {
+    using Math for uint256;
+    using WeightedTree for WeightedTree.Tree;
+
+    error ZeroAddress();
+    error InvalidConfiguration();
+    error InvalidBacking(uint256 backing);
+    error InvalidPositionState(uint256 positionId, ProtocolTypes.PositionStatus status);
+    error CollectionNotEnabled(address collection);
+    error Ineligible(address user);
+    error SolvencyInvariantBroken(uint256 assets, uint256 liabilities);
+    error MarketCapacityReached();
+    error IntakePaused();
+    error NothingToClaim();
+
+    bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
+    bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
+
+    uint256 public constant ACC_PRECISION = 1e27;
+    uint256 public constant WEIGHT_NUMERATOR = 1e36;
+    uint256 public constant BPS = 10_000;
+    uint256 public constant REWARD_MARKUP_BPS = 1_000;
+    uint256 public constant CROWN_REMAINDER_BPS = 500;
+    uint256 public constant PROTOCOL_REMAINDER_BPS = 100;
+    uint256 public constant CROWN_CHALLENGE_BPS = 11_000;
+
+    uint256 public marketId;
+    bytes32 public collectionSetId;
+    address public settlementAsset;
+    IProtocolRegistry public protocolRegistry;
+    address public treasury;
+    address public insuranceReserve;
+    uint128 public minBacking;
+    uint128 public maxBacking;
+    uint32 public maxActivePositions;
+    uint32 public maxDrawsPerEpoch;
+    uint32 public collectionWindow;
+    uint32 public randomnessTimeout;
+    uint32 public decisionWindow;
+    uint16 public markupBps;
+    uint8 public settlementDecimals;
+    uint256 public normalizationFactor;
+
+    MarketVault public vault;
+    PositionNFT public positionToken;
+    SettlementEngine public settlementEngine;
+    EpochCoordinator public epochCoordinator;
+    IEligibilityPolicy public eligibilityPolicy;
+    IRewardController public rewardController;
+
+    WeightedTree.Tree private _tree;
+    mapping(uint256 positionId => ProtocolTypes.Position position) public positions;
+    mapping(uint32 slot => uint256 positionId) public positionAtSlot;
+    mapping(address collection => bool enabled) public collectionEnabled;
+    mapping(address account => uint256 amount) public settlementClaims;
+
+    uint32[] private _freeSlots;
+    uint32 private _nextSlot;
+    uint256 public nextPositionId;
+    uint32 public activePositionCount;
+    bytes32 public activeSetCommitment;
+    uint256 public accBasePerPosition;
+    uint256 public accMarkupPerPosition;
+    uint256 public accRewardInputPerPosition;
+    uint256 public crownPositionId;
+    uint256 public crownPot;
+
+    uint256 public backingLiability;
+    uint256 public earningsLiability;
+    uint256 public rewardInputLiability;
+    uint256 public settlementClaimLiability;
+    uint256 public crownLiability;
+    uint256 public securityLiability;
+    uint256 public protocolLiability;
+
+    bool public depositsPaused;
+    bool public epochLocked;
+    bool private _initialized;
+
+    event CollectionStatusUpdated(address indexed collection, bool enabled);
+    event DepositsPaused(bool paused);
+    event PositionDeposited(
+        uint256 indexed positionId,
+        address indexed owner,
+        address indexed collection,
+        uint256 tokenId,
+        uint256 backing,
+        ProtocolTypes.PositionStatus status
+    );
+    event PositionActivated(uint256 indexed positionId, uint32 treeSlot, uint256 weight);
+    event PositionWithdrawalQueued(uint256 indexed positionId);
+    event PositionWithdrawn(
+        uint256 indexed positionId,
+        address indexed owner,
+        uint256 backing,
+        uint256 cashEarnings,
+        uint256 rewardInput
+    );
+    event BackingChangeQueued(uint256 indexed positionId, uint256 oldBacking, uint256 newBacking);
+    event BackingChanged(uint256 indexed positionId, uint256 oldBacking, uint256 newBacking);
+    event PositionSelected(
+        uint256 indexed receiptId,
+        uint256 indexed positionId,
+        address indexed buyer,
+        uint256 price,
+        uint256 backing
+    );
+    event CrownChanged(uint256 indexed previousPositionId, uint256 indexed newPositionId, uint256 paidPot);
+
+    constructor() {
+        _initialized = true;
+    }
+
+    function initialize(
+        ProtocolTypes.MarketConfig calldata config,
+        address vault_,
+        address positionToken_,
+        address settlementEngine_,
+        address epochCoordinator_,
+        address[] calldata initialCollections
+    ) external {
+        if (_initialized) revert InvalidConfiguration();
+        _initialized = true;
+        if (
+            config.settlementAsset == address(0) || config.protocolRegistry == address(0)
+                || config.governor == address(0) || config.treasury == address(0)
+                || config.insuranceReserve == address(0) || config.randomnessAdapter == address(0)
+                || config.referralRegistry == address(0) || config.rewardController == address(0)
+                || vault_ == address(0) || positionToken_ == address(0) || settlementEngine_ == address(0)
+                || epochCoordinator_ == address(0)
+        ) revert ZeroAddress();
+        if (
+            config.minBacking == 0 || config.maxBacking < config.minBacking || config.maxActivePositions == 0
+                || config.maxDrawsPerEpoch == 0 || config.markupBps > 5_000 || config.decisionWindow == 0
+        ) revert InvalidConfiguration();
+
+        uint8 decimals = IERC20Metadata(config.settlementAsset).decimals();
+        if (decimals > 18) revert InvalidConfiguration();
+
+        marketId = config.marketId;
+        collectionSetId = config.collectionSetId;
+        settlementAsset = config.settlementAsset;
+        protocolRegistry = IProtocolRegistry(config.protocolRegistry);
+        treasury = config.treasury;
+        insuranceReserve = config.insuranceReserve;
+        minBacking = config.minBacking;
+        maxBacking = config.maxBacking;
+        maxActivePositions = config.maxActivePositions;
+        maxDrawsPerEpoch = config.maxDrawsPerEpoch;
+        collectionWindow = config.collectionWindow;
+        randomnessTimeout = config.randomnessTimeout;
+        decisionWindow = config.decisionWindow;
+        markupBps = config.markupBps;
+        settlementDecimals = decimals;
+        normalizationFactor = 10 ** (18 - decimals);
+
+        eligibilityPolicy = IEligibilityPolicy(config.eligibilityPolicy);
+        rewardController = IRewardController(config.rewardController);
+        vault = MarketVault(vault_);
+        positionToken = PositionNFT(positionToken_);
+        settlementEngine = SettlementEngine(settlementEngine_);
+        epochCoordinator = EpochCoordinator(epochCoordinator_);
+        nextPositionId = 1;
+        _tree.initialize(config.maxActivePositions);
+        vault.setOperators(settlementEngine_, epochCoordinator_);
+        for (uint256 i; i < initialCollections.length; ++i) {
+            collectionEnabled[initialCollections[i]] = true;
+            emit CollectionStatusUpdated(initialCollections[i], true);
+        }
+
+        _grantRole(DEFAULT_ADMIN_ROLE, config.governor);
+        _grantRole(GOVERNOR_ROLE, config.governor);
+        if (config.guardian != address(0)) _grantRole(GUARDIAN_ROLE, config.guardian);
+    }
+
+    function setCollectionEnabled(address collection, bool enabled) external onlyRole(GOVERNOR_ROLE) {
+        collectionEnabled[collection] = enabled;
+        emit CollectionStatusUpdated(collection, enabled);
+    }
+
+    function setEligibilityPolicy(address policy) external onlyRole(GOVERNOR_ROLE) {
+        if (_treeLocked()) revert InvalidConfiguration();
+        if (policy != address(0) && !protocolRegistry.eligibilityPolicyApproved(policy)) {
+            revert InvalidConfiguration();
+        }
+        eligibilityPolicy = IEligibilityPolicy(policy);
+    }
+
+    function setDepositsPaused(bool paused) external onlyRole(GUARDIAN_ROLE) {
+        depositsPaused = paused;
+        emit DepositsPaused(paused);
+    }
+
+    function depositPosition(address collection, uint256 tokenId, uint128 backing, address earningsRecipient)
+        external
+        nonReentrant
+        returns (uint256 positionId)
+    {
+        if (depositsPaused) revert IntakePaused();
+        if (!collectionEnabled[collection]) revert CollectionNotEnabled(collection);
+        if (!_canDeposit(msg.sender)) revert Ineligible(msg.sender);
+        _validateBacking(backing);
+        address recipient = earningsRecipient == address(0) ? msg.sender : earningsRecipient;
+
+        positionId = nextPositionId++;
+        ProtocolTypes.Position storage position = positions[positionId];
+        position.collection = collection;
+        position.tokenId = tokenId;
+        position.backing = backing;
+        position.earningsRecipient = recipient;
+        backingLiability += backing;
+
+        vault.depositSettlement(msg.sender, backing);
+        vault.depositNFT(msg.sender, collection, tokenId);
+        positionToken.mint(msg.sender, positionId);
+
+        if (_treeLocked()) position.status = ProtocolTypes.PositionStatus.Staged;
+        else _activate(positionId, position);
+        emit PositionDeposited(positionId, msg.sender, collection, tokenId, backing, position.status);
+        _assertSolvent();
+    }
+
+    function activatePosition(uint256 positionId) external nonReentrant {
+        if (_treeLocked()) revert InvalidConfiguration();
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (position.status != ProtocolTypes.PositionStatus.Staged) {
+            revert InvalidPositionState(positionId, position.status);
+        }
+        _activate(positionId, position);
+    }
+
+    function requestWithdrawal(uint256 positionId) external nonReentrant {
+        if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (position.status == ProtocolTypes.PositionStatus.Staged) {
+            _withdraw(positionId, position, msg.sender);
+        } else if (position.status == ProtocolTypes.PositionStatus.Active && _treeLocked()) {
+            position.status = ProtocolTypes.PositionStatus.WithdrawalQueued;
+            emit PositionWithdrawalQueued(positionId);
+        } else if (position.status == ProtocolTypes.PositionStatus.Active) {
+            _withdraw(positionId, position, msg.sender);
+        } else if (position.status == ProtocolTypes.PositionStatus.WithdrawalQueued && !_treeLocked()) {
+            _withdraw(positionId, position, msg.sender);
+        } else {
+            revert InvalidPositionState(positionId, position.status);
+        }
+        _assertSolvent();
+    }
+
+    function requestBackingChange(uint256 positionId, uint128 newBacking) external nonReentrant {
+        if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
+        _validateBacking(newBacking);
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (position.status != ProtocolTypes.PositionStatus.Active) {
+            revert InvalidPositionState(positionId, position.status);
+        }
+        uint256 oldBacking = position.backing;
+        if (newBacking > oldBacking) {
+            uint256 addition = newBacking - oldBacking;
+            vault.depositSettlement(msg.sender, addition);
+            backingLiability += addition;
+        }
+        if (_treeLocked()) {
+            position.pendingBacking = newBacking;
+            position.status = ProtocolTypes.PositionStatus.BackingChangeQueued;
+            emit BackingChangeQueued(positionId, oldBacking, newBacking);
+        } else {
+            _applyBackingChange(positionId, position, msg.sender, newBacking);
+        }
+        _assertSolvent();
+    }
+
+    function setEarningsRecipient(uint256 positionId, address recipient) external nonReentrant {
+        if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
+        if (recipient == address(0)) revert ZeroAddress();
+        ProtocolTypes.PositionStatus status = positions[positionId].status;
+        if (
+            status != ProtocolTypes.PositionStatus.Staged && status != ProtocolTypes.PositionStatus.Active
+                && status != ProtocolTypes.PositionStatus.BackingChangeQueued
+                && status != ProtocolTypes.PositionStatus.WithdrawalQueued
+        ) revert InvalidPositionState(positionId, status);
+        positions[positionId].earningsRecipient = recipient;
+    }
+
+    function finalizeSelectedPosition(uint256 positionId) external nonReentrant {
+        if (msg.sender != address(settlementEngine)) revert Ineligible(msg.sender);
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (position.status != ProtocolTypes.PositionStatus.Selected) {
+            revert InvalidPositionState(positionId, position.status);
+        }
+        position.status = ProtocolTypes.PositionStatus.Closed;
+        positionToken.setFrozen(positionId, false);
+        positionToken.burn(positionId);
+    }
+
+    function relistFromSettlement(
+        address payer,
+        address owner,
+        address collection,
+        uint256 tokenId,
+        uint128 backing,
+        address earningsRecipient
+    ) external nonReentrant returns (uint256 positionId) {
+        if (msg.sender != address(settlementEngine)) revert Ineligible(msg.sender);
+        _validateBacking(backing);
+        positionId = nextPositionId++;
+        ProtocolTypes.Position storage position = positions[positionId];
+        position.collection = collection;
+        position.tokenId = tokenId;
+        position.backing = backing;
+        position.earningsRecipient = earningsRecipient;
+        backingLiability += backing;
+        vault.depositSettlement(payer, backing);
+        positionToken.mint(owner, positionId);
+        if (_treeLocked()) position.status = ProtocolTypes.PositionStatus.Staged;
+        else _activate(positionId, position);
+        emit PositionDeposited(positionId, owner, collection, tokenId, backing, position.status);
+        _assertSolvent();
+    }
+
+    function applyQueuedBackingChange(uint256 positionId) external nonReentrant {
+        if (_treeLocked()) revert InvalidConfiguration();
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (position.status != ProtocolTypes.PositionStatus.BackingChangeQueued) {
+            revert InvalidPositionState(positionId, position.status);
+        }
+        _applyBackingChange(positionId, position, positionToken.ownerOf(positionId), position.pendingBacking);
+        _assertSolvent();
+    }
+
+    function challengeCrown(uint256 positionId) external {
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (position.status != ProtocolTypes.PositionStatus.Active) {
+            revert InvalidPositionState(positionId, position.status);
+        }
+        _considerCrown(positionId, position.backing);
+    }
+
+    function canPullUser(address user) external view returns (bool) {
+        return _canPull(user);
+    }
+
+    function lockEpoch() external returns (uint32 count, uint256 weight, bytes32 root) {
+        if (msg.sender != address(epochCoordinator) || epochLocked || activePositionCount == 0) {
+            revert InvalidConfiguration();
+        }
+        epochLocked = true;
+        return (activePositionCount, _tree.total(), activeSetCommitment);
+    }
+
+    function unlockEpoch() external {
+        if (msg.sender != address(epochCoordinator) || !epochLocked) revert InvalidConfiguration();
+        epochLocked = false;
+    }
+
+    function resolveDraw(
+        uint256 epochId,
+        address buyer,
+        address receiver,
+        uint128 chargedPrice,
+        address referrer,
+        uint256 randomValue
+    ) external nonReentrant returns (uint256 receiptId, uint256 positionId, uint128 backing) {
+        if (msg.sender != address(epochCoordinator) || !epochLocked) revert InvalidConfiguration();
+        if (chargedPrice != currentPullPrice()) revert InvalidConfiguration();
+        _allocatePullPayment(chargedPrice);
+        uint32 slot = _tree.find(randomValue % _tree.total());
+        positionId = positionAtSlot[slot];
+        ProtocolTypes.Position storage position = positions[positionId];
+        backing = position.backing;
+        receiptId = _selectPosition(epochId, positionId, position, buyer, receiver, chargedPrice, referrer);
+        emit PositionSelected(receiptId, positionId, buyer, chargedPrice, backing);
+        _assertSolvent();
+    }
+
+    function claimSettlement() external nonReentrant {
+        uint256 amount = settlementClaims[msg.sender];
+        if (amount == 0) revert NothingToClaim();
+        settlementClaims[msg.sender] = 0;
+        settlementClaimLiability -= amount;
+        vault.releaseSettlement(msg.sender, amount);
+        _assertSolvent();
+    }
+
+    function claimProtocolRevenue() external onlyRole(GOVERNOR_ROLE) nonReentrant {
+        uint256 amount = protocolLiability;
+        if (amount == 0) revert NothingToClaim();
+        protocolLiability = 0;
+        vault.releaseSettlement(treasury, amount);
+        _assertSolvent();
+    }
+
+    function claimSecurityRevenue() external nonReentrant {
+        uint256 amount = securityLiability;
+        if (amount == 0) revert NothingToClaim();
+        securityLiability = 0;
+        vault.releaseSettlement(insuranceReserve, amount);
+        _assertSolvent();
+    }
+
+    function currentExpectedValue() public view returns (uint256 rawExpectedValue) {
+        uint256 treeWeight = _tree.total();
+        if (activePositionCount == 0 || treeWeight == 0) return 0;
+        uint256 normalized = Math.mulDiv(activePositionCount, WEIGHT_NUMERATOR, treeWeight);
+        rawExpectedValue = Math.ceilDiv(normalized, normalizationFactor);
+    }
+
+    function currentPullPrice() public view returns (uint256) {
+        uint256 expectedValue = currentExpectedValue();
+        return Math.mulDiv(expectedValue, BPS + markupBps, BPS, Math.Rounding.Ceil);
+    }
+
+    function positionProbability(uint256 positionId) external view returns (uint256 probabilityWad) {
+        ProtocolTypes.Position storage position = positions[positionId];
+        if (!_isTreeMember(position.status)) return 0;
+        uint256 treeWeight = _tree.total();
+        return treeWeight == 0 ? 0 : Math.mulDiv(_tree.weightAt(position.treeSlot), 1e18, treeWeight);
+    }
+
+    function pendingPositionEarnings(uint256 positionId)
+        external
+        view
+        returns (uint256 cash, uint256 rewardInput)
+    {
+        ProtocolTypes.Position storage position = positions[positionId];
+        return _pendingEarnings(position);
+    }
+
+    function canTransferPosition(address, address to, uint256 positionId) external view returns (bool) {
+        if (msg.sender != address(positionToken)) return false;
+        ProtocolTypes.PositionStatus status = positions[positionId].status;
+        if (
+            status != ProtocolTypes.PositionStatus.Staged && status != ProtocolTypes.PositionStatus.Active
+                && status != ProtocolTypes.PositionStatus.BackingChangeQueued
+                && status != ProtocolTypes.PositionStatus.WithdrawalQueued
+        ) return false;
+        return _canReceive(to, positionId);
+    }
+
+    function totalWeight() external view returns (uint256) {
+        return _tree.total();
+    }
+
+    function totalLiabilities() public view returns (uint256) {
+        return backingLiability + earningsLiability + rewardInputLiability + settlementClaimLiability
+            + crownLiability + securityLiability + protocolLiability + settlementEngine.totalLiabilities()
+            + epochCoordinator.totalLiabilities();
+    }
+
+    function solvent() external view returns (bool) {
+        return IERC20Metadata(settlementAsset).balanceOf(address(vault)) >= totalLiabilities();
+    }
+
+    function _allocatePullPayment(uint256 pullPrice) private {
+        uint256 expectedValue = currentExpectedValue();
+        uint256 markup = pullPrice - expectedValue;
+        uint256 rewardShare = markup * REWARD_MARKUP_BPS / BPS;
+        uint256 remainder = markup - rewardShare;
+        uint256 crownShare = remainder * CROWN_REMAINDER_BPS / BPS;
+        uint256 protocolShare = remainder * PROTOCOL_REMAINDER_BPS / BPS;
+        uint256 depositorMarkup = remainder - crownShare - protocolShare;
+
+        _accrueCash(expectedValue, true);
+        _accrueCash(depositorMarkup, false);
+        _accrueReward(rewardShare);
+        crownPot += crownShare;
+        crownLiability += crownShare;
+        protocolLiability += protocolShare;
+    }
+
+    function _accrueCash(uint256 amount, bool base) private {
+        uint256 increment = amount * ACC_PRECISION / activePositionCount;
+        uint256 assigned = increment * activePositionCount / ACC_PRECISION;
+        if (base) accBasePerPosition += increment;
+        else accMarkupPerPosition += increment;
+        earningsLiability += assigned;
+        securityLiability += amount - assigned;
+    }
+
+    function _accrueReward(uint256 amount) private {
+        uint256 increment = amount * ACC_PRECISION / activePositionCount;
+        uint256 assigned = increment * activePositionCount / ACC_PRECISION;
+        accRewardInputPerPosition += increment;
+        rewardInputLiability += assigned;
+        securityLiability += amount - assigned;
+    }
+
+    function _selectPosition(
+        uint256 epochId,
+        uint256 positionId,
+        ProtocolTypes.Position storage position,
+        address buyer,
+        address receiver,
+        uint128 chargedPrice,
+        address referrer
+    ) private returns (uint256 receiptId) {
+        (uint256 cash, uint256 rewardInput) = _pendingEarnings(position);
+        address previousOwner = positionToken.ownerOf(positionId);
+        _removeFromTree(position);
+        backingLiability -= position.backing;
+        earningsLiability -= cash;
+        rewardInputLiability -= rewardInput;
+
+        if (position.pendingBacking > position.backing) {
+            uint256 unusedAddition = position.pendingBacking - position.backing;
+            backingLiability -= unusedAddition;
+            settlementClaims[previousOwner] += unusedAddition;
+            settlementClaimLiability += unusedAddition;
+        }
+        position.pendingBacking = 0;
+        if (crownPositionId == positionId) _releaseCrown(positionId, 0);
+        position.status = ProtocolTypes.PositionStatus.Selected;
+        positionToken.setFrozen(positionId, true);
+        receiptId = settlementEngine.registerSelection(
+            epochId,
+            positionId,
+            buyer,
+            receiver,
+            position.collection,
+            position.tokenId,
+            previousOwner,
+            position.earningsRecipient,
+            chargedPrice,
+            position.backing,
+            cash,
+            rewardInput,
+            referrer
+        );
+    }
+
+    function _withdraw(uint256 positionId, ProtocolTypes.Position storage position, address owner) private {
+        if (_isTreeMember(position.status)) _removeFromTree(position);
+        (uint256 cash, uint256 rewardInput) = _pendingEarnings(position);
+        if (crownPositionId == positionId) _releaseCrown(positionId, 0);
+        uint256 backing = position.backing;
+        if (position.pendingBacking > backing) backing += position.pendingBacking - backing;
+        position.status = ProtocolTypes.PositionStatus.Withdrawn;
+        backingLiability -= backing;
+        earningsLiability -= cash;
+        rewardInputLiability -= rewardInput;
+        positionToken.burn(positionId);
+        vault.releaseSettlement(owner, backing);
+        if (cash != 0) vault.releaseSettlement(position.earningsRecipient, cash);
+        if (rewardInput != 0) {
+            vault.releaseSettlement(address(rewardController), rewardInput);
+            rewardController.enqueue(position.earningsRecipient, settlementAsset, rewardInput);
+        }
+        vault.releaseNFT(owner, position.collection, position.tokenId);
+        emit PositionWithdrawn(positionId, owner, backing, cash, rewardInput);
+    }
+
+    function _activate(uint256 positionId, ProtocolTypes.Position storage position) private {
+        if (activePositionCount >= maxActivePositions) revert MarketCapacityReached();
+        uint32 slot;
+        if (_freeSlots.length != 0) {
+            slot = _freeSlots[_freeSlots.length - 1];
+            _freeSlots.pop();
+        } else {
+            slot = _nextSlot++;
+            if (slot >= _tree.capacity) revert MarketCapacityReached();
+        }
+        uint256 weight = _weight(position.backing);
+        position.treeSlot = slot;
+        position.status = ProtocolTypes.PositionStatus.Active;
+        position.baseDebt = accBasePerPosition;
+        position.markupDebt = accMarkupPerPosition;
+        position.rewardDebt = accRewardInputPerPosition;
+        positionAtSlot[slot] = positionId;
+        _tree.set(slot, weight, _leafCommitment(positionId, slot, weight));
+        activePositionCount++;
+        activeSetCommitment = _tree.root();
+        _considerCrown(positionId, position.backing);
+        emit PositionActivated(positionId, slot, weight);
+    }
+
+    function _removeFromTree(ProtocolTypes.Position storage position) private {
+        uint32 slot = position.treeSlot;
+        _tree.set(slot, 0, bytes32(0));
+        activeSetCommitment = _tree.root();
+        positionAtSlot[slot] = 0;
+        _freeSlots.push(slot);
+        activePositionCount--;
+    }
+
+    function _applyBackingChange(
+        uint256 positionId,
+        ProtocolTypes.Position storage position,
+        address owner,
+        uint128 newBacking
+    ) private {
+        uint256 oldBacking = position.backing;
+        uint32 slot = position.treeSlot;
+        position.backing = newBacking;
+        position.pendingBacking = 0;
+        position.status = ProtocolTypes.PositionStatus.Active;
+        uint256 newWeight = _weight(newBacking);
+        _tree.set(slot, newWeight, _leafCommitment(positionId, slot, newWeight));
+        activeSetCommitment = _tree.root();
+        if (newBacking < oldBacking) {
+            uint256 reduction = oldBacking - newBacking;
+            backingLiability -= reduction;
+            vault.releaseSettlement(owner, reduction);
+        }
+        _considerCrown(positionId, newBacking);
+        emit BackingChanged(positionId, oldBacking, newBacking);
+    }
+
+    function _considerCrown(uint256 positionId, uint256 backing) private {
+        uint256 incumbent = crownPositionId;
+        if (incumbent == positionId) return;
+        if (incumbent == 0 || backing * BPS >= uint256(positions[incumbent].backing) * CROWN_CHALLENGE_BPS) {
+            _releaseCrown(incumbent, positionId);
+        }
+    }
+
+    function _releaseCrown(uint256 previousPositionId, uint256 newPositionId) private {
+        uint256 paidPot = crownPot;
+        if (previousPositionId != 0 && paidPot != 0) {
+            address owner = positionToken.ownerOf(previousPositionId);
+            crownPot = 0;
+            crownLiability -= paidPot;
+            settlementClaims[owner] += paidPot;
+            settlementClaimLiability += paidPot;
+        }
+        crownPositionId = newPositionId;
+        emit CrownChanged(previousPositionId, newPositionId, paidPot);
+    }
+
+    function _pendingEarnings(ProtocolTypes.Position storage position)
+        private
+        view
+        returns (uint256 cash, uint256 rewardInput)
+    {
+        if (position.selectedCashEarnings != 0 || position.selectedRewardInput != 0) {
+            return (position.selectedCashEarnings, position.selectedRewardInput);
+        }
+        if (!_isTreeMember(position.status)) return (0, 0);
+        cash = (accBasePerPosition - position.baseDebt) / ACC_PRECISION
+            + (accMarkupPerPosition - position.markupDebt) / ACC_PRECISION;
+        rewardInput = (accRewardInputPerPosition - position.rewardDebt) / ACC_PRECISION;
+    }
+
+    function _weight(uint256 rawBacking) private view returns (uint256) {
+        return Math.mulDiv(WEIGHT_NUMERATOR, 1, rawBacking * normalizationFactor);
+    }
+
+    function _leafCommitment(uint256 positionId, uint32 slot, uint256 weight) private pure returns (bytes32) {
+        return keccak256(abi.encode(positionId, slot, weight));
+    }
+
+    function _validateBacking(uint256 backing) private view {
+        if (backing < minBacking || backing > maxBacking) revert InvalidBacking(backing);
+    }
+
+    function _canDeposit(address user) private view returns (bool) {
+        return address(eligibilityPolicy) == address(0) || eligibilityPolicy.canDeposit(user, marketId);
+    }
+
+    function _canPull(address user) private view returns (bool) {
+        return address(eligibilityPolicy) == address(0) || eligibilityPolicy.canPull(user, marketId);
+    }
+
+    function _canReceive(address user, uint256 positionId) private view returns (bool) {
+        return address(eligibilityPolicy) == address(0) || eligibilityPolicy.canReceive(user, positionId);
+    }
+
+    function _treeLocked() private view returns (bool) {
+        return epochLocked;
+    }
+
+    function _isTreeMember(ProtocolTypes.PositionStatus status) private pure returns (bool) {
+        return status == ProtocolTypes.PositionStatus.Active
+            || status == ProtocolTypes.PositionStatus.BackingChangeQueued
+            || status == ProtocolTypes.PositionStatus.WithdrawalQueued;
+    }
+
+    function _assertSolvent() private view {
+        uint256 assets = IERC20Metadata(settlementAsset).balanceOf(address(vault));
+        uint256 liabilities = totalLiabilities();
+        if (assets < liabilities) revert SolvencyInvariantBroken(assets, liabilities);
+    }
+}

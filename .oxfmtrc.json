@@ -1,0 +1,4 @@
+{
+  "ignorePatterns": ["cache/**", "coverage/**", "dist/**", "lib/**", "out/**"],
+  "semi": false
+}

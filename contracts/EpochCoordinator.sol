@@ -1,0 +1,350 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
+import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import { MarketVault } from "./MarketVault.sol";
+import { ProtocolTypes } from "./types/ProtocolTypes.sol";
+import { IRandomnessAdapter } from "./interfaces/IRandomnessAdapter.sol";
+import { IReferralRegistry } from "./interfaces/IReferralRegistry.sol";
+import { IProtocolRegistry } from "./interfaces/IProtocolRegistry.sol";
+import { IDrawMarketCore } from "./interfaces/IDrawMarketCore.sol";
+
+contract EpochCoordinator is AccessControl, ReentrancyGuard {
+    using SafeCast for uint256;
+
+    error InvalidEpochState(ProtocolTypes.EpochStatus status);
+    error InvalidOrder();
+    error DeadlineExpired();
+    error PriceLimitExceeded(uint256 price, uint256 limit);
+    error Ineligible(address user);
+    error BatchTooLarge();
+    error IntakePaused();
+    error RandomnessNotTimedOut();
+    error NothingToClaim();
+
+    bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
+    bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
+    bytes32 public constant ROUTER_ROLE = keccak256("ROUTER_ROLE");
+
+    struct Epoch {
+        uint256 id;
+        ProtocolTypes.EpochStatus status;
+        uint48 openedAt;
+        uint48 randomnessRequestedAt;
+        uint32 activeCountSnapshot;
+        uint32 orderCursor;
+        uint32 totalResolved;
+        uint32 totalRequested;
+        uint256 totalWeightSnapshot;
+        bytes32 activeTreeRoot;
+        bytes32 orderRoot;
+        bytes32 requestId;
+        uint256 randomSeed;
+    }
+
+    uint256 public immutable marketId;
+    IDrawMarketCore public immutable market;
+    MarketVault public immutable vault;
+    IProtocolRegistry public immutable protocolRegistry;
+    IReferralRegistry public immutable referralRegistry;
+    uint32 public immutable maxDrawsPerEpoch;
+    uint32 public immutable collectionWindow;
+    uint32 public immutable randomnessTimeout;
+    IRandomnessAdapter public randomnessAdapter;
+    Epoch public epoch;
+    mapping(uint256 epochId => ProtocolTypes.PullOrder[] orders) private _orders;
+    mapping(address account => uint256 amount) public refundClaims;
+    uint256 public escrowLiability;
+    uint256 public refundLiability;
+    bool public pullsPaused;
+
+    event PullOrderSubmitted(
+        uint256 indexed epochId,
+        uint256 indexed orderIndex,
+        address indexed buyer,
+        uint32 drawCount,
+        uint256 escrow
+    );
+    event RandomnessRequested(uint256 indexed epochId, bytes32 indexed requestId, bytes32 commitment);
+    event RandomnessReady(uint256 indexed epochId, uint256 randomSeed);
+    event DrawResolved(
+        uint256 indexed epochId,
+        uint256 indexed receiptId,
+        uint256 indexed positionId,
+        uint256 price,
+        uint256 backing
+    );
+    event EpochFinalized(uint256 indexed epochId, uint32 resolvedDraws);
+    event EpochCancelled(uint256 indexed epochId);
+    event PullsPaused(bool paused);
+
+    constructor(
+        uint256 marketId_,
+        address market_,
+        address vault_,
+        address protocolRegistry_,
+        address referralRegistry_,
+        address randomnessAdapter_,
+        address governor_,
+        address guardian_,
+        address trustedRouter_,
+        uint32 maxDrawsPerEpoch_,
+        uint32 collectionWindow_,
+        uint32 randomnessTimeout_
+    ) {
+        marketId = marketId_;
+        market = IDrawMarketCore(market_);
+        vault = MarketVault(vault_);
+        protocolRegistry = IProtocolRegistry(protocolRegistry_);
+        referralRegistry = IReferralRegistry(referralRegistry_);
+        randomnessAdapter = IRandomnessAdapter(randomnessAdapter_);
+        maxDrawsPerEpoch = maxDrawsPerEpoch_;
+        collectionWindow = collectionWindow_;
+        randomnessTimeout = randomnessTimeout_;
+        _grantRole(DEFAULT_ADMIN_ROLE, governor_);
+        _grantRole(GOVERNOR_ROLE, governor_);
+        if (guardian_ != address(0)) _grantRole(GUARDIAN_ROLE, guardian_);
+        if (trustedRouter_ != address(0)) _grantRole(ROUTER_ROLE, trustedRouter_);
+    }
+
+    function setRandomnessAdapter(address adapter) external onlyRole(GOVERNOR_ROLE) {
+        if (_inFlight()) revert InvalidEpochState(epoch.status);
+        if (!protocolRegistry.randomnessAdapterApproved(adapter)) revert InvalidOrder();
+        randomnessAdapter = IRandomnessAdapter(adapter);
+    }
+
+    function setPullsPaused(bool paused) external onlyRole(GUARDIAN_ROLE) {
+        pullsPaused = paused;
+        emit PullsPaused(paused);
+    }
+
+    function grantRole(bytes32 role, address account) public override {
+        if (role == ROUTER_ROLE && !protocolRegistry.routerApproved(account)) revert InvalidOrder();
+        super.grantRole(role, account);
+    }
+
+    function requestPull(ProtocolTypes.PullOrderInput calldata input)
+        external
+        nonReentrant
+        returns (uint256 orderIndex)
+    {
+        return _requestPull(msg.sender, msg.sender, input);
+    }
+
+    function requestPullFor(address payer, address buyer, ProtocolTypes.PullOrderInput calldata input)
+        external
+        onlyRole(ROUTER_ROLE)
+        nonReentrant
+        returns (uint256 orderIndex)
+    {
+        return _requestPull(payer, buyer, input);
+    }
+
+    function requestRandomness() external nonReentrant {
+        if (epoch.status != ProtocolTypes.EpochStatus.Collecting) revert InvalidEpochState(epoch.status);
+        if (block.timestamp < uint256(epoch.openedAt) + collectionWindow) revert DeadlineExpired();
+        bytes32 commitment = keccak256(
+            abi.encode(
+                block.chainid,
+                marketId,
+                epoch.id,
+                epoch.activeTreeRoot,
+                epoch.orderRoot,
+                epoch.activeCountSnapshot,
+                epoch.totalWeightSnapshot,
+                block.number
+            )
+        );
+        epoch.status = ProtocolTypes.EpochStatus.RandomnessRequested;
+        epoch.randomnessRequestedAt = uint48(block.timestamp);
+        epoch.requestId = randomnessAdapter.requestRandomness(commitment, 1);
+        emit RandomnessRequested(epoch.id, epoch.requestId, commitment);
+    }
+
+    function provideRandomness(bytes calldata proof) external nonReentrant {
+        if (epoch.status != ProtocolTypes.EpochStatus.RandomnessRequested) {
+            revert InvalidEpochState(epoch.status);
+        }
+        if (block.timestamp > uint256(epoch.randomnessRequestedAt) + randomnessTimeout) {
+            revert RandomnessNotTimedOut();
+        }
+        uint256[] memory words = randomnessAdapter.verifyAndConsume(epoch.requestId, proof);
+        if (words.length == 0) revert InvalidOrder();
+        epoch.randomSeed = words[0];
+        epoch.status = ProtocolTypes.EpochStatus.RandomnessReady;
+        emit RandomnessReady(epoch.id, words[0]);
+    }
+
+    function resolveEpoch(uint32 maxDraws) external nonReentrant {
+        if (maxDraws == 0 || maxDraws > maxDrawsPerEpoch) revert BatchTooLarge();
+        if (
+            epoch.status != ProtocolTypes.EpochStatus.RandomnessReady
+                && epoch.status != ProtocolTypes.EpochStatus.Resolving
+        ) {
+            revert InvalidEpochState(epoch.status);
+        }
+        epoch.status = ProtocolTypes.EpochStatus.Resolving;
+        ProtocolTypes.PullOrder[] storage epochOrders = _orders[epoch.id];
+        uint32 processed;
+        while (processed < maxDraws && epoch.orderCursor < epochOrders.length) {
+            ProtocolTypes.PullOrder storage order = epochOrders[epoch.orderCursor];
+            if (order.resolvedCount == order.drawCount) {
+                _refundOrder(order);
+                epoch.orderCursor++;
+                continue;
+            }
+            uint256 unitPrice = market.currentPullPrice();
+            if (
+                block.timestamp > order.deadline || market.activePositionCount() == 0
+                    || unitPrice > order.maxUnitPrice || unitPrice > order.escrowRemaining
+            ) {
+                _refundOrder(order);
+                epoch.orderCursor++;
+                continue;
+            }
+            uint128 quotedPrice = unitPrice.toUint128();
+            order.escrowRemaining -= quotedPrice;
+            escrowLiability -= unitPrice;
+            uint256 randomValue = uint256(
+                keccak256(abi.encode(epoch.randomSeed, epoch.id, epoch.totalResolved, epoch.orderCursor))
+            );
+            (uint256 receiptId, uint256 positionId, uint128 backing) = market.resolveDraw(
+                epoch.id, order.buyer, order.receiver, quotedPrice, order.referrer, randomValue
+            );
+            order.resolvedCount++;
+            epoch.totalResolved++;
+            processed++;
+            emit DrawResolved(epoch.id, receiptId, positionId, unitPrice, backing);
+            if (order.resolvedCount == order.drawCount) {
+                _refundOrder(order);
+                epoch.orderCursor++;
+            }
+        }
+        if (epoch.orderCursor == epochOrders.length) {
+            epoch.status = ProtocolTypes.EpochStatus.Finalized;
+            market.unlockEpoch();
+            emit EpochFinalized(epoch.id, epoch.totalResolved);
+        }
+    }
+
+    function cancelTimedOutEpoch(uint32 maxOrders) external nonReentrant {
+        if (epoch.status != ProtocolTypes.EpochStatus.RandomnessRequested) {
+            revert InvalidEpochState(epoch.status);
+        }
+        if (block.timestamp <= uint256(epoch.randomnessRequestedAt) + randomnessTimeout) {
+            revert RandomnessNotTimedOut();
+        }
+        ProtocolTypes.PullOrder[] storage epochOrders = _orders[epoch.id];
+        uint32 processed;
+        while (processed < maxOrders && epoch.orderCursor < epochOrders.length) {
+            _refundOrder(epochOrders[epoch.orderCursor]);
+            epoch.orderCursor++;
+            processed++;
+        }
+        if (epoch.orderCursor == epochOrders.length) {
+            epoch.status = ProtocolTypes.EpochStatus.Cancelled;
+            market.unlockEpoch();
+            emit EpochCancelled(epoch.id);
+        }
+    }
+
+    function claimRefund() external nonReentrant {
+        uint256 amount = refundClaims[msg.sender];
+        if (amount == 0) revert NothingToClaim();
+        refundClaims[msg.sender] = 0;
+        refundLiability -= amount;
+        vault.releaseSettlement(msg.sender, amount);
+    }
+
+    function orderCount(uint256 epochId) external view returns (uint256) {
+        return _orders[epochId].length;
+    }
+
+    function orderAt(uint256 epochId, uint256 index) external view returns (ProtocolTypes.PullOrder memory) {
+        return _orders[epochId][index];
+    }
+
+    function totalLiabilities() external view returns (uint256) {
+        return escrowLiability + refundLiability;
+    }
+
+    function _requestPull(address payer, address buyer, ProtocolTypes.PullOrderInput calldata input)
+        private
+        returns (uint256 orderIndex)
+    {
+        if (pullsPaused) revert IntakePaused();
+        if (!market.canPullUser(buyer)) revert Ineligible(buyer);
+        if (input.deadline < block.timestamp) revert DeadlineExpired();
+        if (input.drawCount == 0 || input.drawCount > maxDrawsPerEpoch) revert BatchTooLarge();
+        if (market.activePositionCount() < input.drawCount) revert InvalidOrder();
+        uint256 unitPrice = market.currentPullPrice();
+        if (unitPrice == 0 || unitPrice > input.maxUnitPrice) {
+            revert PriceLimitExceeded(unitPrice, input.maxUnitPrice);
+        }
+        if (uint256(input.maxUnitPrice) * input.drawCount > input.maxTotalPrice) {
+            revert PriceLimitExceeded(uint256(input.maxUnitPrice) * input.drawCount, input.maxTotalPrice);
+        }
+        if (!_inFlight()) _startEpoch();
+        if (epoch.status != ProtocolTypes.EpochStatus.Collecting) revert InvalidEpochState(epoch.status);
+        if (uint256(epoch.totalRequested) + input.drawCount > maxDrawsPerEpoch) revert BatchTooLarge();
+        vault.depositSettlement(payer, input.maxTotalPrice);
+        escrowLiability += input.maxTotalPrice;
+        address referrer = referralRegistry.bindFromMarket(buyer, input.referralCode);
+        ProtocolTypes.PullOrder memory order = ProtocolTypes.PullOrder({
+            buyer: buyer,
+            receiver: input.receiver == address(0) ? buyer : input.receiver,
+            drawCount: input.drawCount,
+            resolvedCount: 0,
+            maxUnitPrice: input.maxUnitPrice,
+            escrowRemaining: input.maxTotalPrice,
+            deadline: input.deadline,
+            referralCode: input.referralCode,
+            referrer: referrer
+        });
+        orderIndex = _orders[epoch.id].length;
+        _orders[epoch.id].push(order);
+        epoch.totalRequested += input.drawCount;
+        epoch.orderRoot = keccak256(abi.encode(epoch.orderRoot, orderIndex, order));
+        emit PullOrderSubmitted(epoch.id, orderIndex, buyer, input.drawCount, input.maxTotalPrice);
+    }
+
+    function _startEpoch() private {
+        (uint32 activeCount, uint256 weight, bytes32 root) = market.lockEpoch();
+        epoch = Epoch({
+            id: epoch.id + 1,
+            status: ProtocolTypes.EpochStatus.Collecting,
+            openedAt: uint48(block.timestamp),
+            randomnessRequestedAt: 0,
+            activeCountSnapshot: activeCount,
+            orderCursor: 0,
+            totalResolved: 0,
+            totalRequested: 0,
+            totalWeightSnapshot: weight,
+            activeTreeRoot: root,
+            orderRoot: bytes32(0),
+            requestId: bytes32(0),
+            randomSeed: 0
+        });
+    }
+
+    function _refundOrder(ProtocolTypes.PullOrder storage order) private {
+        uint256 refund = order.escrowRemaining;
+        order.resolvedCount = order.drawCount;
+        order.escrowRemaining = 0;
+        if (refund != 0) {
+            escrowLiability -= refund;
+            refundClaims[order.buyer] += refund;
+            refundLiability += refund;
+        }
+    }
+
+    function _inFlight() private view returns (bool) {
+        ProtocolTypes.EpochStatus status = epoch.status;
+        return status == ProtocolTypes.EpochStatus.Collecting
+            || status == ProtocolTypes.EpochStatus.RandomnessRequested
+            || status == ProtocolTypes.EpochStatus.RandomnessReady
+            || status == ProtocolTypes.EpochStatus.Resolving;
+    }
+}

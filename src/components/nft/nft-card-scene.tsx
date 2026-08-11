@@ -6,6 +6,7 @@ import {
   AdditiveBlending,
   CanvasTexture,
   DoubleSide,
+  Shape,
   SRGBColorSpace,
   type Mesh,
   type MeshBasicMaterial,
@@ -36,11 +37,10 @@ const CARD_WIDTH = 2.62
 const CARD_HEIGHT = 3.38
 const CARD_DEPTH = 0.12
 const CARD_RADIUS = 0.16
-const DRAG_RADIANS_PER_PIXEL = 0.0035
-const IDLE_RADIANS_PER_SECOND = 0.012
+const DRAG_RADIANS_PER_PIXEL = 0.0022
 const VELOCITY_WINDOW_MS = 90
-const DECELERATION_RATE = 0.984
-const MAX_RELEASE_VELOCITY = 4.4
+const DECELERATION_RATE = 0.96
+const MAX_RELEASE_VELOCITY = 1.6
 const MOTION_BLUR_THRESHOLD = 0.15
 const MAX_MOTION_BLUR_PX = 1.25
 const BANK_LEAN = 0.05
@@ -62,6 +62,42 @@ const releaseVelocity = (samples: DragState["samples"]) => {
   const first = recent[0]
   const elapsed = Math.max(last.time - first.time, 1)
   return ((last.x - first.x) / elapsed) * 1000 * DRAG_RADIANS_PER_PIXEL
+}
+
+function createRoundedRectShape(width: number, height: number, radius: number) {
+  const shape = new Shape()
+  const left = -width / 2
+  const right = width / 2
+  const top = height / 2
+  const bottom = -height / 2
+
+  shape.moveTo(left + radius, top)
+  shape.lineTo(right - radius, top)
+  shape.quadraticCurveTo(right, top, right, top - radius)
+  shape.lineTo(right, bottom + radius)
+  shape.quadraticCurveTo(right, bottom, right - radius, bottom)
+  shape.lineTo(left + radius, bottom)
+  shape.quadraticCurveTo(left, bottom, left, bottom + radius)
+  shape.lineTo(left, top - radius)
+  shape.quadraticCurveTo(left, top, left + radius, top)
+  return shape
+}
+
+function createBottomRoundedRectShape(width: number, height: number, radius: number) {
+  const shape = new Shape()
+  const left = -width / 2
+  const right = width / 2
+  const top = height / 2
+  const bottom = -height / 2
+
+  shape.moveTo(left, top)
+  shape.lineTo(right, top)
+  shape.lineTo(right, bottom + radius)
+  shape.quadraticCurveTo(right, bottom, right - radius, bottom)
+  shape.lineTo(left + radius, bottom)
+  shape.quadraticCurveTo(left, bottom, left, bottom + radius)
+  shape.lineTo(left, top)
+  return shape
 }
 
 function useMotionBlur(reduced: boolean) {
@@ -151,6 +187,23 @@ function useCardTextures(accent: string) {
       context.fillRect(0, 0, width, height)
     })
 
+    const hoverSheen = createCanvasTexture([512, 512], (context, width, height) => {
+      context.clearRect(0, 0, width, height)
+      context.save()
+      context.translate(width / 2, height / 2)
+      context.rotate(-0.24)
+      const gradient = context.createLinearGradient(-82, 0, 82, 0)
+      gradient.addColorStop(0, "rgba(255, 255, 255, 0)")
+      gradient.addColorStop(0.38, "rgba(226, 255, 201, 0.08)")
+      gradient.addColorStop(0.5, "rgba(255, 255, 255, 0.72)")
+      gradient.addColorStop(0.62, "rgba(210, 245, 255, 0.1)")
+      gradient.addColorStop(1, "rgba(255, 255, 255, 0)")
+      context.fillStyle = gradient
+      context.fillRect(-100, -height, 200, height * 2)
+      context.restore()
+    })
+    hoverSheen.offset.x = 0.45
+
     const back = createCanvasTexture([512, 680], (context, width, height) => {
       context.fillStyle = "#0b110b"
       context.fillRect(0, 0, width, height)
@@ -208,11 +261,52 @@ function useCardTextures(accent: string) {
       context.restore()
     })
 
-    return { fade, sheen, back }
+    return { fade, sheen, hoverSheen, back }
   }, [accent])
 }
 
-function CardFace({ position, asset }: { position: Position; asset: Market["asset"] }) {
+type HoverShine = {
+  opacity: SpringValue<number>
+  offset: SpringValue<number>
+}
+
+function AnimatedHoverSheen({ texture, shine }: { texture: CanvasTexture; shine: HoverShine }) {
+  const material = useRef<MeshBasicMaterial>(null)
+  const shape = useMemo(
+    () => createRoundedRectShape(CARD_WIDTH - 0.1, CARD_HEIGHT - 0.1, CARD_RADIUS - 0.05),
+    [],
+  )
+
+  useFrame(() => {
+    texture.offset.x = shine.offset.get()
+    if (material.current) material.current.opacity = shine.opacity.get()
+  })
+
+  return (
+    <mesh position={[0, 0, 0.079]}>
+      <shapeGeometry args={[shape, 8]} />
+      <meshBasicMaterial
+        ref={material}
+        blending={AdditiveBlending}
+        depthWrite={false}
+        map={texture}
+        opacity={0}
+        toneMapped={false}
+        transparent
+      />
+    </mesh>
+  )
+}
+
+function CardFace({
+  position,
+  asset,
+  shine,
+}: {
+  position: Position
+  asset: Market["asset"]
+  shine?: HoverShine
+}) {
   const backing =
     asset === "ETH"
       ? `${position.backing.toFixed(position.backing < 1 ? 3 : 2)} ETH`
@@ -221,11 +315,18 @@ function CardFace({ position, asset }: { position: Position; asset: Market["asse
   const collection =
     position.collection.length > 26 ? `${position.collection.slice(0, 25)}…` : position.collection
   const textures = useCardTextures(position.accent)
+  const labelShape = useMemo(() => createBottomRoundedRectShape(2.5, 0.6, 0.1), [])
   return (
     <>
       {/* Body */}
       <RoundedBox args={[CARD_WIDTH, CARD_HEIGHT, CARD_DEPTH]} radius={CARD_RADIUS} smoothness={5}>
-        <meshStandardMaterial color="#111611" metalness={0.55} roughness={0.34} />
+        <meshStandardMaterial
+          color={position.accent}
+          emissive={position.accent}
+          emissiveIntensity={0.04}
+          metalness={0.35}
+          roughness={0.42}
+        />
       </RoundedBox>
 
       {/* Back face */}
@@ -238,21 +339,18 @@ function CardFace({ position, asset }: { position: Position; asset: Market["asse
         )}
       </mesh>
 
-      {/* Art with accent frame */}
-      <mesh position={[0, 0.14, 0.066]}>
-        <planeGeometry args={[2.5, 2.84]} />
-        <meshBasicMaterial color={position.accent} toneMapped={false} />
-      </mesh>
+      {/* Art inset directly into the single accent frame. */}
       <Image
         url={position.image}
-        position={[0, 0.14, 0.07]}
-        scale={[2.42, 2.76]}
+        position={[0, 0.2, 0.07]}
+        scale={[2.5, 2.86]}
         radius={0.1}
         toneMapped={false}
+        transparent
       />
       {textures ? (
-        <mesh position={[0, 0.14, 0.073]}>
-          <planeGeometry args={[2.42, 2.76]} />
+        <mesh position={[0, 0.2, 0.073]}>
+          <planeGeometry args={[2.5, 2.86]} />
           <meshBasicMaterial map={textures.fade} transparent toneMapped={false} />
         </mesh>
       ) : null}
@@ -260,7 +358,7 @@ function CardFace({ position, asset }: { position: Position; asset: Market["asse
       {/* Label plate */}
       <group position={[0, -1.35, 0.072]}>
         <mesh>
-          <planeGeometry args={[2.5, 0.6]} />
+          <shapeGeometry args={[labelShape, 8]} />
           <meshBasicMaterial color="#0a120a" toneMapped={false} />
         </mesh>
         <mesh position={[0, 0.295, 0.004]}>
@@ -316,10 +414,13 @@ function CardFace({ position, asset }: { position: Position; asset: Market["asse
             blending={AdditiveBlending}
             depthWrite={false}
             map={textures.sheen}
-            opacity={0.85}
+            opacity={0.5}
             transparent
           />
         </mesh>
+      ) : null}
+      {textures && shine ? (
+        <AnimatedHoverSheen shine={shine} texture={textures.hoverSheen} />
       ) : null}
     </>
   )
@@ -414,12 +515,24 @@ function RingCard({
   const radiusX = Math.min(4.45, viewport.width * 0.43)
   const radiusZ = 3.25
   const baseAngle = (index / count) * Math.PI * 2
-  const hover = useSpring({
-    scale: hovered ? 1.055 : 1,
-    y: hovered ? 0.09 : 0,
-    config: { tension: 280, friction: 24 },
+  const [hover, hoverApi] = useSpring(() => ({
+    scale: 1,
+    y: 0,
+    shineOpacity: 0,
+    shineOffset: 0,
+    config: { tension: 320, friction: 30 },
     immediate: reduced,
-  })
+  }))
+
+  useEffect(() => {
+    void hoverApi.start({
+      scale: hovered ? 1.025 : 1,
+      y: hovered ? 0.04 : 0,
+      shineOpacity: hovered ? 0.82 : 0,
+      ...(!hovered ? { shineOffset: 0 } : {}),
+      immediate: reduced,
+    })
+  }, [hoverApi, hovered, reduced])
   const orbitPosition = rotation.to((value) => {
     const angle = baseAngle + value
     const depth = (Math.cos(angle) + 1) / 2
@@ -457,6 +570,14 @@ function RingCard({
           event.stopPropagation()
           onHover(index)
         }}
+        onPointerMove={(event) => {
+          event.stopPropagation()
+          onHover(index)
+          if (!event.uv) return
+          void hoverApi.start({
+            shineOffset: reduced ? 0 : clamp(0.5 - event.uv.x, -0.42, 0.42),
+          })
+        }}
         position-y={hover.y}
         scale={hover.scale}
       >
@@ -470,7 +591,11 @@ function RingCard({
             transparent
           />
         </a.mesh>
-        <CardFace asset={asset} position={position} />
+        <CardFace
+          asset={asset}
+          position={position}
+          shine={{ offset: hover.shineOffset, opacity: hover.shineOpacity }}
+        />
       </a.group>
     </a.group>
   )
@@ -634,14 +759,6 @@ function ArtifactOrbit({
     const activeDrag = drag.current
     if (activeDrag) {
       rotation.set(activeDrag.targetRotation)
-    } else if (!reduced && !isSettling.current) {
-      const nextRotation = rotation.get() + IDLE_RADIANS_PER_SECOND * Math.min(delta, 0.05)
-      rotation.set(nextRotation)
-      const nextIndex = modulo(-Math.round(nextRotation / step), positionCount)
-      if (nextIndex !== lastSelectedIndex.current) {
-        lastSelectedIndex.current = nextIndex
-        onSelect(nextIndex)
-      }
     }
     const currentRotation = rotation.get()
     const speed = (currentRotation - previousAudioRotation.current) / Math.max(delta, 0.001)
@@ -767,9 +884,9 @@ function ArtifactOrbit({
     void api.start({
       rotation: snappedRotation,
       config: {
-        mass: 1.4,
-        tension: 58,
-        friction: 13,
+        mass: 1.1,
+        tension: 80,
+        friction: 19,
         velocity: reduced ? 0 : velocity,
       },
       immediate: reduced,

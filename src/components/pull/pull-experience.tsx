@@ -1,4 +1,3 @@
-import { animated, useTransition } from "@react-spring/web"
 import {
   ChevronDown,
   ChevronLeft,
@@ -29,8 +28,6 @@ import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/con
 const NftCardScene = lazy(() =>
   import("@/components/nft/nft-card-scene").then((module) => ({ default: module.NftCardScene })),
 )
-const prefersReducedMotion = () =>
-  typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
 const shortenWallet = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
 
 type PullExperienceProps = {
@@ -172,7 +169,6 @@ function StageArtifact({
   onSelect: (index: number) => void
   onRevealReady: () => void
 }) {
-  const reduced = prefersReducedMotion()
   const selectedIndex =
     market.positions.length === 0
       ? 0
@@ -183,125 +179,116 @@ function StageArtifact({
     spinAudio.prepare()
     onSelect((selectedIndex + distance + market.positions.length) % market.positions.length)
   }
-  const transitions = useTransition(stage, {
-    from: { opacity: 0, transform: "translateY(10px) scale(.985)" },
-    enter: { opacity: 1, transform: "translateY(0) scale(1)" },
-    leave: { opacity: 0, transform: "translateY(-6px) scale(.99)" },
-    config: { tension: 250, friction: 27 },
-    immediate: reduced,
-  })
   return (
     <section
       className={cn("gacha-arena", `stage-${stage}`)}
       aria-label={`${market.name} collectible arena`}
     >
-      {transitions((style, phase) => (
-        <animated.div className="artifact-stage" style={style}>
-          <div className="arena-market">
-            <span>
-              {phase === "configure"
-                ? `${market.positions.length} featured · ${market.activePositions} live · ${market.asset}`
-                : phase === "drawing"
-                  ? "Verifiable draw"
-                  : "Your pull"}
-            </span>
-            <strong>
-              {phase === "configure" ? (
-                <>
-                  <Crown /> {selectedPosition?.name}
-                </>
-              ) : phase === "drawing" ? (
-                <>
-                  <Dices /> Pool root locked
-                </>
-              ) : (
-                <>
-                  <Trophy /> {position?.name}
-                </>
-              )}
-            </strong>
-          </div>
-          <div
-            aria-label={`${market.name} circular position selector. Use left and right arrow keys to spin.`}
-            className="artifact-canvas"
-            onKeyDown={(event) => {
-              if (phase !== "configure") return
-              if (event.key === "ArrowLeft") {
-                event.preventDefault()
-                selectRelative(-1)
-              }
-              if (event.key === "ArrowRight") {
-                event.preventDefault()
-                selectRelative(1)
-              }
-            }}
-            role={phase === "configure" ? "group" : undefined}
-            tabIndex={phase === "configure" ? 0 : -1}
-          >
-            <Suspense fallback={<div className="artifact-canvas-fallback" />}>
-              <NftCardScene
-                activeIndex={activeIndex}
-                market={market}
-                onRevealReady={onRevealReady}
-                onSelect={onSelect}
-                revealedPosition={position}
-                stage={phase}
-              />
-            </Suspense>
-          </div>
-          {phase === "configure" ? (
-            <>
-              <div className="arena-spin-controls">
-                <button
-                  aria-label="Spin to previous position"
-                  onClick={() => selectRelative(-1)}
-                  type="button"
-                >
-                  <ChevronLeft aria-hidden="true" />
-                </button>
-                <span aria-live="polite">
-                  {selectedIndex + 1} / {market.positions.length}
-                </span>
-                <button
-                  aria-label="Spin to next position"
-                  onClick={() => selectRelative(1)}
-                  type="button"
-                >
-                  <ChevronRight aria-hidden="true" />
-                </button>
-              </div>
-              <div className="arena-gesture">
-                <span>Drag to spin · tap to select</span>
-                <strong>{selectedPosition?.collection}</strong>
-              </div>
-            </>
-          ) : (
-            <div className="artifact-stage-copy">
-              <p>
-                {phase === "drawing"
-                  ? "Randomness requested"
-                  : phase === "settled"
-                    ? "Settlement complete"
-                    : "Position revealed"}
-              </p>
-              <strong>
-                {phase === "drawing"
-                  ? "Charging the committed pool…"
-                  : phase === "settled"
-                    ? "Your receipt is ready"
-                    : position?.collection}
-              </strong>
-              <small>
-                {phase === "drawing"
-                  ? "A proof will be attached to your pull receipt."
-                  : phase === "revealed"
-                    ? `${formatValue(position?.backing ?? 0, market.asset)} backing`
-                    : "Pull again whenever you are ready."}
-              </small>
+      <div className="artifact-stage">
+        <div className="arena-market">
+          <span>
+            {stage === "configure"
+              ? `${market.positions.length} featured · ${market.activePositions} live · ${market.asset}`
+              : stage === "drawing"
+                ? "Verifiable draw"
+                : "Your pull"}
+          </span>
+          <strong>
+            {stage === "configure" ? (
+              <>
+                <Crown /> {selectedPosition?.name}
+              </>
+            ) : stage === "drawing" ? (
+              <>
+                <Dices /> Pool root locked
+              </>
+            ) : (
+              <>
+                <Trophy /> {position?.name}
+              </>
+            )}
+          </strong>
+        </div>
+        <div
+          aria-label={`${market.name} circular position selector. Use left and right arrow keys to spin.`}
+          className="artifact-canvas"
+          onKeyDown={(event) => {
+            if (stage !== "configure") return
+            if (event.key === "ArrowLeft") {
+              event.preventDefault()
+              selectRelative(-1)
+            }
+            if (event.key === "ArrowRight") {
+              event.preventDefault()
+              selectRelative(1)
+            }
+          }}
+          role={stage === "configure" ? "group" : undefined}
+          tabIndex={stage === "configure" ? 0 : -1}
+        >
+          <Suspense fallback={<div className="artifact-canvas-fallback" />}>
+            <NftCardScene
+              activeIndex={activeIndex}
+              market={market}
+              onRevealReady={onRevealReady}
+              onSelect={onSelect}
+              revealedPosition={position}
+              stage={stage}
+            />
+          </Suspense>
+        </div>
+        {stage === "configure" ? (
+          <>
+            <div className="arena-spin-controls">
+              <button
+                aria-label="Spin to previous position"
+                onClick={() => selectRelative(-1)}
+                type="button"
+              >
+                <ChevronLeft aria-hidden="true" />
+              </button>
+              <span aria-live="polite">
+                {selectedIndex + 1} / {market.positions.length}
+              </span>
+              <button
+                aria-label="Spin to next position"
+                onClick={() => selectRelative(1)}
+                type="button"
+              >
+                <ChevronRight aria-hidden="true" />
+              </button>
             </div>
-          )}
-        </animated.div>
-      ))}
+            <div className="arena-gesture">
+              <span>Drag to spin · tap to select</span>
+              <strong>{selectedPosition?.collection}</strong>
+            </div>
+          </>
+        ) : (
+          <div className="artifact-stage-copy">
+            <p>
+              {stage === "drawing"
+                ? "Randomness requested"
+                : stage === "settled"
+                  ? "Settlement complete"
+                  : "Position revealed"}
+            </p>
+            <strong>
+              {stage === "drawing"
+                ? "Charging the committed pool…"
+                : stage === "settled"
+                  ? "Your receipt is ready"
+                  : position?.collection}
+            </strong>
+            <small>
+              {stage === "drawing"
+                ? "A proof will be attached to your pull receipt."
+                : stage === "revealed"
+                  ? `${formatValue(position?.backing ?? 0, market.asset)} backing`
+                  : "Pull again whenever you are ready."}
+            </small>
+          </div>
+        )}
+      </div>
     </section>
   )
 }

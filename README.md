@@ -2,6 +2,8 @@
 
 Interactive frontend prototype for the ETH-and-USDG backed collectible draw protocol described in [SPECS.md](./SPECS.md).
 
+Live demo: [backed-draw-protocol.pages.dev](https://backed-draw-protocol.pages.dev/)
+
 The repository also contains the Foundry implementation of the protocol core. See [docs/CONTRACTS.md](./docs/CONTRACTS.md) for boundaries, flows, liabilities, and deployment order.
 
 ## Run locally

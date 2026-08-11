@@ -16,7 +16,7 @@ import {
   Trophy,
   WalletCards,
 } from "lucide-react"
-import { lazy, Suspense, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useState } from "react"
 import { useAccount, useWriteContract } from "wagmi"
 import { parseUnits, zeroHash } from "viem"
 import { markets, recentDraws } from "@/data/markets"
@@ -51,16 +51,10 @@ type PullExperienceProps = {
 
 export function PullExperience(props: PullExperienceProps) {
   const [carouselIndex, setCarouselIndex] = useState(0)
-  const previousStage = useRef(props.stage)
   const revealedPosition = props.revealedPositionId
     ? props.market.positions.find((position) => position.id === props.revealedPositionId)
     : undefined
-
-  useEffect(() => {
-    const completedSpin = previousStage.current === "drawing" && props.stage === "revealed"
-    previousStage.current = props.stage
-    if (completedSpin) void launchRevealConfetti().catch(() => undefined)
-  }, [props.stage])
+  const celebrateReveal = () => void launchRevealConfetti().catch(() => undefined)
 
   return (
     <div className="gacha-page">
@@ -77,6 +71,7 @@ export function PullExperience(props: PullExperienceProps) {
           activeIndex={carouselIndex}
           key={props.market.id}
           market={props.market}
+          onRevealReady={celebrateReveal}
           onSelect={setCarouselIndex}
           position={revealedPosition}
           stage={props.stage}
@@ -168,12 +163,14 @@ function StageArtifact({
   position,
   activeIndex,
   onSelect,
+  onRevealReady,
 }: {
   market: Market
   stage: PullStage
   position?: Position
   activeIndex: number
   onSelect: (index: number) => void
+  onRevealReady: () => void
 }) {
   const reduced = prefersReducedMotion()
   const selectedIndex =
@@ -245,6 +242,7 @@ function StageArtifact({
               <NftCardScene
                 activeIndex={activeIndex}
                 market={market}
+                onRevealReady={onRevealReady}
                 onSelect={onSelect}
                 revealedPosition={position}
                 stage={phase}

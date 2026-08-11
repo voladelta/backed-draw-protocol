@@ -1,7 +1,15 @@
-import { Suspense, useEffect, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import { ContactShadows, Image, MeshReflectorMaterial, RoundedBox, Text } from "@react-three/drei"
 import { a, useSpring, type SpringValue } from "@react-spring/three"
+import {
+  AdditiveBlending,
+  CanvasTexture,
+  DoubleSide,
+  SRGBColorSpace,
+  type Mesh,
+  type MeshBasicMaterial,
+} from "three"
 import { spinAudio } from "@/audio/spin-audio"
 import type { Market, Position, PullStage } from "@/types/protocol"
 
@@ -11,6 +19,8 @@ type NftCardSceneProps = {
   stage: PullStage
   revealedPosition?: Position
   onSelect: (index: number) => void
+  /** Fires once the reveal flip lands face-up (glow burst + confetti moment). */
+  onRevealReady?: () => void
 }
 
 type DragState = {
@@ -22,15 +32,24 @@ type DragState = {
   moved: boolean
 }
 
+const CARD_WIDTH = 2.62
+const CARD_HEIGHT = 3.38
+const CARD_DEPTH = 0.12
+const CARD_RADIUS = 0.16
 const DRAG_RADIANS_PER_PIXEL = 0.0035
 const IDLE_RADIANS_PER_SECOND = 0.012
 const VELOCITY_WINDOW_MS = 90
-const DECELERATION_RATE = 0.982
+const DECELERATION_RATE = 0.984
+const MAX_RELEASE_VELOCITY = 4.4
 const MOTION_BLUR_THRESHOLD = 0.15
 const MAX_MOTION_BLUR_PX = 1.25
+const BANK_LEAN = 0.05
+const BANK_TILT = 0.016
+const BANK_LERP_SPEED = 9
 const prefersReducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
 const modulo = (value: number, divisor: number) => ((value % divisor) + divisor) % divisor
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 const nearestEquivalent = (target: number, current: number) =>
   target + Math.round((current - target) / (Math.PI * 2)) * Math.PI * 2
 const projectMomentum = (velocity: number) =>
@@ -74,60 +93,234 @@ function useMotionBlur(reduced: boolean) {
   }
 }
 
+function drawRoundedRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  context.beginPath()
+  context.moveTo(x + radius, y)
+  context.arcTo(x + width, y, x + width, y + height, radius)
+  context.arcTo(x + width, y + height, x, y + height, radius)
+  context.arcTo(x, y + height, x, y, radius)
+  context.arcTo(x, y, x + width, y, radius)
+  context.closePath()
+}
+
+function createCanvasTexture(
+  size: [number, number],
+  draw: (context: CanvasRenderingContext2D, width: number, height: number) => void,
+) {
+  const canvas = document.createElement("canvas")
+  canvas.width = size[0]
+  canvas.height = size[1]
+  const context = canvas.getContext("2d")
+  if (context) draw(context, size[0], size[1])
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  return texture
+}
+
+function useCardTextures(accent: string) {
+  return useMemo(() => {
+    if (typeof document === "undefined") return null
+
+    const fade = createCanvasTexture([8, 256], (context, width, height) => {
+      const gradient = context.createLinearGradient(0, 0, 0, height)
+      gradient.addColorStop(0, "rgba(4, 8, 4, 0)")
+      gradient.addColorStop(0.68, "rgba(4, 8, 4, 0)")
+      gradient.addColorStop(1, "rgba(4, 8, 4, 0.58)")
+      context.fillStyle = gradient
+      context.fillRect(0, 0, width, height)
+    })
+
+    const sheen = createCanvasTexture([256, 340], (context, width, height) => {
+      context.clearRect(0, 0, width, height)
+      drawRoundedRect(context, 0, 0, width, height, 22)
+      context.clip()
+      const gradient = context.createLinearGradient(0, 0, width * 0.92, height)
+      gradient.addColorStop(0, "rgba(255, 255, 255, 0.13)")
+      gradient.addColorStop(0.22, "rgba(255, 255, 255, 0.04)")
+      gradient.addColorStop(0.46, "rgba(255, 255, 255, 0)")
+      gradient.addColorStop(0.74, "rgba(255, 255, 255, 0.05)")
+      gradient.addColorStop(1, "rgba(255, 255, 255, 0.01)")
+      context.fillStyle = gradient
+      context.fillRect(0, 0, width, height)
+    })
+
+    const back = createCanvasTexture([512, 680], (context, width, height) => {
+      context.fillStyle = "#0b110b"
+      context.fillRect(0, 0, width, height)
+      context.save()
+      drawRoundedRect(context, 0, 0, width, height, 44)
+      context.clip()
+
+      const glow = context.createRadialGradient(
+        width / 2,
+        height / 2,
+        40,
+        width / 2,
+        height / 2,
+        width * 0.72,
+      )
+      glow.addColorStop(0, "rgba(255, 255, 255, 0.06)")
+      glow.addColorStop(1, "rgba(255, 255, 255, 0)")
+      context.fillStyle = glow
+      context.fillRect(0, 0, width, height)
+
+      context.strokeStyle = "rgba(236, 246, 228, 0.05)"
+      context.lineWidth = 2
+      for (let x = -height; x < width + height; x += 46) {
+        context.beginPath()
+        context.moveTo(x, 0)
+        context.lineTo(x + height, height)
+        context.stroke()
+      }
+
+      context.strokeStyle = "rgba(236, 246, 228, 0.16)"
+      context.lineWidth = 3
+      drawRoundedRect(context, 26, 26, width - 52, height - 52, 30)
+      context.stroke()
+
+      context.save()
+      context.translate(width / 2, height / 2)
+      context.rotate(Math.PI / 4)
+      const diamond = 92
+      context.strokeStyle = accent
+      context.globalAlpha = 0.9
+      context.lineWidth = 5
+      context.strokeRect(-diamond / 2, -diamond / 2, diamond, diamond)
+      context.globalAlpha = 0.28
+      context.lineWidth = 2
+      context.strokeRect(-diamond, -diamond, diamond * 2, diamond * 2)
+      context.restore()
+
+      context.fillStyle = "rgba(232, 241, 226, 0.34)"
+      context.font = "700 24px ui-monospace, SFMono-Regular, Menlo, monospace"
+      context.textAlign = "center"
+      if ("letterSpacing" in context) {
+        ;(context as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = "8px"
+      }
+      context.fillText("BACKED", width / 2, height - 66)
+      context.restore()
+    })
+
+    return { fade, sheen, back }
+  }, [accent])
+}
+
 function CardFace({ position, asset }: { position: Position; asset: Market["asset"] }) {
   const backing =
     asset === "ETH"
       ? `${position.backing.toFixed(position.backing < 1 ? 3 : 2)} ETH`
       : `$${position.backing.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
   const name = position.name.length > 25 ? `${position.name.slice(0, 24)}…` : position.name
+  const collection =
+    position.collection.length > 26 ? `${position.collection.slice(0, 25)}…` : position.collection
+  const textures = useCardTextures(position.accent)
   return (
     <>
-      <RoundedBox args={[2.62, 3.38, 0.12]} radius={0.16} smoothness={5}>
-        <meshStandardMaterial color="#101510" metalness={0.76} roughness={0.19} />
+      {/* Body */}
+      <RoundedBox args={[CARD_WIDTH, CARD_HEIGHT, CARD_DEPTH]} radius={CARD_RADIUS} smoothness={5}>
+        <meshStandardMaterial color="#111611" metalness={0.55} roughness={0.34} />
       </RoundedBox>
+
+      {/* Back face */}
+      <mesh position={[0, 0, -CARD_DEPTH / 2 - 0.002]} rotation-y={Math.PI}>
+        <planeGeometry args={[CARD_WIDTH - 0.02, CARD_HEIGHT - 0.02]} />
+        {textures ? (
+          <meshBasicMaterial map={textures.back} toneMapped={false} />
+        ) : (
+          <meshBasicMaterial color="#0b110b" />
+        )}
+      </mesh>
+
+      {/* Art with accent frame */}
+      <mesh position={[0, 0.14, 0.066]}>
+        <planeGeometry args={[2.5, 2.84]} />
+        <meshBasicMaterial color={position.accent} toneMapped={false} />
+      </mesh>
       <Image
         url={position.image}
-        position={[0, 0.12, 0.071]}
-        scale={[2.39, 2.7]}
-        radius={0.08}
+        position={[0, 0.14, 0.07]}
+        scale={[2.42, 2.76]}
+        radius={0.1}
         toneMapped={false}
       />
-      <mesh position={[0, -1.33, 0.08]}>
-        <planeGeometry args={[2.4, 0.06]} />
-        <meshBasicMaterial color={position.accent} />
-      </mesh>
-      <group position={[0, -1.39, 0.095]}>
+      {textures ? (
+        <mesh position={[0, 0.14, 0.073]}>
+          <planeGeometry args={[2.42, 2.76]} />
+          <meshBasicMaterial map={textures.fade} transparent toneMapped={false} />
+        </mesh>
+      ) : null}
+
+      {/* Label plate */}
+      <group position={[0, -1.35, 0.072]}>
         <mesh>
-          <planeGeometry args={[2.3, 0.46]} />
-          <meshBasicMaterial color="#071007" opacity={0.88} transparent />
+          <planeGeometry args={[2.5, 0.6]} />
+          <meshBasicMaterial color="#0a120a" toneMapped={false} />
+        </mesh>
+        <mesh position={[0, 0.295, 0.004]}>
+          <planeGeometry args={[2.5, 0.016]} />
+          <meshBasicMaterial color={position.accent} toneMapped={false} />
         </mesh>
         <Text
           anchorX="left"
           anchorY="middle"
-          color="#f0f5eb"
-          fontSize={0.145}
-          maxWidth={1.9}
-          position={[-1.02, 0.085, 0.008]}
+          color="#93a28c"
+          fontSize={0.072}
+          letterSpacing={0.22}
+          maxWidth={2.2}
+          position={[-1.13, 0.175, 0.008]}
+        >
+          {collection.toUpperCase()}
+        </Text>
+        <Text
+          anchorX="left"
+          anchorY="middle"
+          color="#f2f7ed"
+          fontSize={0.152}
+          fontWeight={700}
+          maxWidth={2.2}
+          position={[-1.13, 0.03, 0.008]}
         >
           {name}
         </Text>
         <Text
           anchorX="left"
           anchorY="middle"
-          color="#a8b5a1"
-          fontSize={0.09}
-          position={[-1.02, -0.095, 0.008]}
+          color="#8a9784"
+          fontSize={0.088}
+          position={[-1.13, -0.16, 0.008]}
         >{`${position.probability.toFixed(2)}% odds`}</Text>
         <Text
           anchorX="right"
           anchorY="middle"
           color={position.accent}
-          fontSize={0.09}
-          position={[1.02, -0.095, 0.008]}
+          fontSize={0.104}
+          fontWeight={700}
+          position={[1.13, -0.16, 0.008]}
         >
           {backing}
         </Text>
       </group>
+
+      {/* Foil sheen */}
+      {textures ? (
+        <mesh position={[0, 0, 0.078]}>
+          <planeGeometry args={[CARD_WIDTH, CARD_HEIGHT]} />
+          <meshBasicMaterial
+            blending={AdditiveBlending}
+            depthWrite={false}
+            map={textures.sheen}
+            opacity={0.85}
+            transparent
+          />
+        </mesh>
+      ) : null}
     </>
   )
 }
@@ -137,24 +330,61 @@ function FocusCard({
   asset,
   reveal,
   reduced,
+  initialVelocity,
+  onRest,
 }: {
   position: Position
   asset: Market["asset"]
   reveal: boolean
   reduced: boolean
+  initialVelocity: number
+  onRest?: () => void
 }) {
+  const inner = useRef<import("three").Group>(null)
+  const [tiltSpring, tiltApi] = useSpring(() => ({
+    tiltX: 0,
+    tiltY: 0,
+    config: { tension: 210, friction: 18 },
+  }))
   const spring = useSpring({
     from: reveal
-      ? { rotation: [0.025, Math.PI, 0] as [number, number, number], scale: 0.92 }
+      ? { rotation: [0.025, Math.PI, 0] as [number, number, number], scale: 0.9 }
       : undefined,
     to: { rotation: [0.025, 0, 0] as [number, number, number], scale: 1.06 },
-    config: { tension: 170, friction: 20 },
+    config: { tension: 190, friction: 15, velocity: clamp(initialVelocity, -3, 3) * 0.4 },
     immediate: reduced,
+    onRest: () => onRest?.(),
+  })
+
+  useEffect(() => {
+    if (reduced) return undefined
+    const onMove = (event: PointerEvent) => {
+      const nx = (event.clientX / window.innerWidth) * 2 - 1
+      const ny = (event.clientY / window.innerHeight) * 2 - 1
+      tiltApi.start({ tiltX: -ny * 0.07, tiltY: nx * 0.11 })
+    }
+    const onLeave = () => tiltApi.start({ tiltX: 0, tiltY: 0 })
+    window.addEventListener("pointermove", onMove)
+    document.documentElement.addEventListener("pointerleave", onLeave)
+    return () => {
+      window.removeEventListener("pointermove", onMove)
+      document.documentElement.removeEventListener("pointerleave", onLeave)
+    }
+  }, [reduced, tiltApi])
+
+  useFrame(({ clock }) => {
+    const group = inner.current
+    if (!group) return
+    group.position.y = reduced ? 0 : Math.sin(clock.elapsedTime * 1.1) * 0.035
+    group.rotation.x = tiltSpring.tiltX.get()
+    group.rotation.y = tiltSpring.tiltY.get()
   })
 
   return (
     <a.group rotation={spring.rotation as never} scale={spring.scale}>
-      <CardFace asset={asset} position={position} />
+      <group ref={inner}>
+        <CardFace asset={asset} position={position} />
+      </group>
     </a.group>
   )
 }
@@ -205,6 +435,10 @@ function RingCard({
   })
   const orbitRotationY = rotation.to((value) => -Math.sin(baseAngle + value) * 0.56)
   const orbitRotationZ = rotation.to((value) => Math.sin(baseAngle + value) * -0.035)
+  const orbitOpacity = rotation.to((value) => {
+    const depth = (Math.cos(baseAngle + value) + 1) / 2
+    return 0.34 + depth * 0.66
+  })
 
   return (
     <a.group
@@ -226,6 +460,16 @@ function RingCard({
         position-y={hover.y}
         scale={hover.scale}
       >
+        {/* Depth veil: dims cards as they recede */}
+        <a.mesh position={[0, 0, 0.082]}>
+          <planeGeometry args={[CARD_WIDTH + 0.02, CARD_HEIGHT + 0.02]} />
+          <a.meshBasicMaterial
+            color="#050905"
+            depthWrite={false}
+            opacity={orbitOpacity.to((value) => 1 - value)}
+            transparent
+          />
+        </a.mesh>
         <CardFace asset={asset} position={position} />
       </a.group>
     </a.group>
@@ -265,16 +509,40 @@ function CircularRing({
   ))
 }
 
+/** Applies velocity-proportional lean/tilt banking to a spinning group. */
+function useBanking(rotation: SpringValue<number>, reduced: boolean) {
+  const group = useRef<import("three").Group>(null)
+  const bank = useRef(0)
+  const previousRotation = useRef(rotation.get())
+
+  useFrame((_, delta) => {
+    const currentRotation = rotation.get()
+    const speed = (currentRotation - previousRotation.current) / Math.max(delta, 0.001)
+    previousRotation.current = currentRotation
+    const target = reduced ? 0 : clamp(speed * 0.04, -1, 1)
+    const smoothing = 1 - Math.exp(-Math.min(delta, 0.05) * BANK_LERP_SPEED)
+    bank.current += (target - bank.current) * smoothing
+    if (group.current) {
+      group.current.rotation.z = bank.current * BANK_LEAN
+      group.current.rotation.x = -Math.abs(bank.current) * BANK_TILT
+    }
+  })
+
+  return { group, bank }
+}
+
 function SpinningRing({
   positions,
   asset,
   activeIndex,
   reduced,
+  onVelocity,
 }: {
   positions: Position[]
   asset: Market["asset"]
   activeIndex: number
   reduced: boolean
+  onVelocity?: (velocity: number) => void
 }) {
   const step = (Math.PI * 2) / positions.length
   const previousRotation = useRef(-activeIndex * step)
@@ -282,13 +550,14 @@ function SpinningRing({
   const spin = useSpring({
     from: { rotation: -activeIndex * step, scale: 0.96 },
     to: {
-      rotation: -activeIndex * step + (reduced ? 0 : Math.PI * 2),
+      rotation: -activeIndex * step + (reduced ? 0 : Math.PI * 2 * 3),
       scale: 1.015,
     },
-    config: { mass: 1.5, tension: 28, friction: 12 },
+    config: { mass: 2.1, tension: 26, friction: 11.5 },
     immediate: reduced,
     onRest: () => spinAudio.settle(),
   })
+  const { group } = useBanking(spin.rotation, reduced)
 
   useFrame((_, delta) => {
     const currentRotation = spin.rotation.get()
@@ -296,21 +565,24 @@ function SpinningRing({
     previousRotation.current = currentRotation
     applyMotionBlur(speed, delta)
     spinAudio.update(speed, currentRotation, step)
+    onVelocity?.(speed)
   })
 
   useEffect(() => () => spinAudio.stop(), [])
 
   return (
     <a.group scale={spin.scale}>
-      <CircularRing
-        asset={asset}
-        hovered={null}
-        onHover={() => undefined}
-        onSelect={() => undefined}
-        positions={positions}
-        reduced={reduced}
-        rotation={spin.rotation}
-      />
+      <group ref={group}>
+        <CircularRing
+          asset={asset}
+          hovered={null}
+          onHover={() => undefined}
+          onSelect={() => undefined}
+          positions={positions}
+          reduced={reduced}
+          rotation={spin.rotation}
+        />
+      </group>
     </a.group>
   )
 }
@@ -321,7 +593,12 @@ function ArtifactOrbit({
   stage,
   revealedPosition,
   onSelect,
-}: NftCardSceneProps) {
+  onDraggingChange,
+  onRevealReady,
+}: Omit<NftCardSceneProps, "onRevealReady"> & {
+  onDraggingChange: (dragging: boolean) => void
+  onRevealReady: () => void
+}) {
   const positions = market.positions
   const positionCount = positions.length
   const selectedIndex = positionCount === 0 ? 0 : modulo(activeIndex, positionCount)
@@ -334,6 +611,8 @@ function ArtifactOrbit({
   const previousAudioRotation = useRef(-selectedIndex * step)
   const lastSelectedIndex = useRef(selectedIndex)
   const suppressClickUntil = useRef(0)
+  const drawVelocity = useRef(0)
+  const revealAnnounced = useRef(false)
   const [hovered, setHovered] = useState<number | null>(null)
   const reduced = prefersReducedMotion()
   const applyMotionBlur = useMotionBlur(reduced)
@@ -344,6 +623,11 @@ function ArtifactOrbit({
     config: { tension: 175, friction: 24 },
     immediate: reduced,
   }))
+  const { group: bankGroup } = useBanking(rotation, reduced)
+
+  useEffect(() => {
+    if (stage === "drawing") revealAnnounced.current = false
+  }, [stage])
 
   useFrame((_, delta) => {
     if (stage !== "configure" || positionCount === 0) return
@@ -400,15 +684,28 @@ function ArtifactOrbit({
       <SpinningRing
         activeIndex={selectedIndex}
         asset={market.asset}
+        onVelocity={(velocity) => {
+          drawVelocity.current = velocity
+        }}
         positions={positions}
         reduced={reduced}
       />
     )
   }
   if (stage === "revealed" || stage === "settled") {
+    const handleRevealRest =
+      stage === "revealed"
+        ? () => {
+            if (revealAnnounced.current) return
+            revealAnnounced.current = true
+            onRevealReady()
+          }
+        : undefined
     return (
       <FocusCard
         asset={market.asset}
+        initialVelocity={stage === "revealed" ? drawVelocity.current : 0}
+        onRest={handleRevealRest}
         position={revealedPosition ?? selectedPosition}
         reduced={reduced}
         reveal={stage === "revealed"}
@@ -444,6 +741,7 @@ function ArtifactOrbit({
     const current = drag.current
     if (!current) return
     drag.current = null
+    onDraggingChange(false)
     if (!current.moved) {
       isSettling.current = false
       audioActive.current = false
@@ -451,7 +749,11 @@ function ArtifactOrbit({
       return
     }
     rotation.set(current.targetRotation)
-    const velocity = releaseVelocity(current.samples)
+    const velocity = clamp(
+      releaseVelocity(current.samples),
+      -MAX_RELEASE_VELOCITY,
+      MAX_RELEASE_VELOCITY,
+    )
     const currentRotation = current.targetRotation
     const projectedRotation = reduced
       ? currentRotation
@@ -465,10 +767,10 @@ function ArtifactOrbit({
     void api.start({
       rotation: snappedRotation,
       config: {
-        mass: 1.5,
-        tension: 65,
-        friction: 17,
-        velocity: reduced ? 0 : Math.max(-2.8, Math.min(2.8, velocity)),
+        mass: 1.4,
+        tension: 58,
+        friction: 13,
+        velocity: reduced ? 0 : velocity,
       },
       immediate: reduced,
       onRest: () => {
@@ -496,6 +798,7 @@ function ArtifactOrbit({
         spinAudio.start()
         audioActive.current = true
         previousAudioRotation.current = rotation.get()
+        onDraggingChange(true)
         const now = performance.now()
         drag.current = {
           pointerId: event.pointerId,
@@ -523,26 +826,37 @@ function ArtifactOrbit({
         settleDrag()
       }}
     >
-      <CircularRing
-        asset={market.asset}
-        hovered={hovered}
-        onHover={(index) => setHovered(supportsHover ? index : null)}
-        onSelect={selectCard}
-        positions={positions}
-        reduced={reduced}
-        rotation={rotation}
-      />
+      <group ref={bankGroup}>
+        <CircularRing
+          asset={market.asset}
+          hovered={hovered}
+          onHover={(index) => setHovered(supportsHover ? index : null)}
+          onSelect={selectCard}
+          positions={positions}
+          reduced={reduced}
+          rotation={rotation}
+        />
+      </group>
     </group>
   )
 }
 
-export function NftCardScene(props: NftCardSceneProps) {
+export function NftCardScene({ onRevealReady, ...props }: NftCardSceneProps) {
+  const [dragging, setDragging] = useState(false)
+  const { revealCard } = useCardRevealEffects()
+  const handleRevealReady = () => {
+    revealCard.trigger()
+    onRevealReady?.()
+  }
   return (
     <Canvas
       camera={{ position: [0, 0.1, 7.7], fov: 38 }}
       dpr={[1, 1.7]}
       gl={{ antialias: true, alpha: true }}
-      style={{ cursor: props.stage === "configure" ? "grab" : "default", touchAction: "none" }}
+      style={{
+        cursor: props.stage === "configure" ? (dragging ? "grabbing" : "grab") : "default",
+        touchAction: "none",
+      }}
     >
       <ambientLight intensity={0.55} />
       <hemisphereLight args={["#eaffcc", "#071007", 1.2]} />
@@ -561,9 +875,105 @@ export function NftCardScene(props: NftCardSceneProps) {
         />
       </mesh>
       <ContactShadows opacity={0.46} position={[0, -2.02, 0]} scale={10} blur={2.5} far={4} />
+      <RevealGlow effects={revealCard.effects} />
       <Suspense fallback={null}>
-        <ArtifactOrbit {...props} />
+        <ArtifactOrbit
+          {...props}
+          onDraggingChange={setDragging}
+          onRevealReady={handleRevealReady}
+        />
       </Suspense>
     </Canvas>
+  )
+}
+
+/** Shared spring that drives the glow burst + shockwave ring on reveal. */
+function useCardRevealEffects() {
+  const reduced = useMemo(prefersReducedMotion, [])
+  const [effects, api] = useSpring(() => ({
+    progress: 0,
+    config: { tension: 120, friction: 26 },
+    immediate: true,
+  }))
+  const trigger = () => {
+    if (reduced) return
+    void api.start({
+      from: { progress: 0 },
+      to: { progress: 1 },
+      config: { tension: 120, friction: 26 },
+      immediate: false,
+    })
+  }
+  return { revealCard: { effects, trigger }, reduced }
+}
+
+function RevealGlow({ effects }: { effects: { progress: SpringValue<number> } }) {
+  const glowTexture = useMemo(() => {
+    if (typeof document === "undefined") return null
+    return createCanvasTexture([256, 256], (context, width, height) => {
+      const gradient = context.createRadialGradient(
+        width / 2,
+        height / 2,
+        8,
+        width / 2,
+        height / 2,
+        width / 2,
+      )
+      gradient.addColorStop(0, "rgba(233, 255, 188, 0.9)")
+      gradient.addColorStop(0.35, "rgba(202, 255, 58, 0.32)")
+      gradient.addColorStop(1, "rgba(202, 255, 58, 0)")
+      context.fillStyle = gradient
+      context.fillRect(0, 0, width, height)
+    })
+  }, [])
+
+  const glowMesh = useRef<Mesh>(null)
+  const glowMaterial = useRef<MeshBasicMaterial>(null)
+  const ringMesh = useRef<Mesh>(null)
+  const ringMaterial = useRef<MeshBasicMaterial>(null)
+
+  useFrame(() => {
+    const value = clamp(effects.progress.get(), 0, 1)
+    if (glowMesh.current && glowMaterial.current) {
+      glowMaterial.current.opacity = Math.sin(value * Math.PI) * 0.5
+      const scale = 1.5 + value * 1.3
+      glowMesh.current.scale.set(scale, scale, 1)
+    }
+    if (ringMesh.current && ringMaterial.current) {
+      ringMaterial.current.opacity =
+        Math.max(0, Math.sin(Math.min(value * 1.15, 1) * Math.PI)) * 0.85
+      const scale = 0.32 + value * 1.05
+      ringMesh.current.scale.set(scale, scale, 1)
+    }
+  })
+
+  return (
+    <group position={[0, 0, -0.7]}>
+      {glowTexture ? (
+        <mesh ref={glowMesh}>
+          <planeGeometry args={[3.6, 3.6]} />
+          <meshBasicMaterial
+            ref={glowMaterial}
+            blending={AdditiveBlending}
+            depthWrite={false}
+            map={glowTexture}
+            opacity={0}
+            transparent
+          />
+        </mesh>
+      ) : null}
+      <mesh ref={ringMesh}>
+        <ringGeometry args={[2.2, 2.28, 72]} />
+        <meshBasicMaterial
+          ref={ringMaterial}
+          blending={AdditiveBlending}
+          color="#e9ffbc"
+          depthWrite={false}
+          opacity={0}
+          side={DoubleSide}
+          transparent
+        />
+      </mesh>
+    </group>
   )
 }

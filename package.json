@@ -26,6 +26,7 @@
     "@types/three": "latest",
     "class-variance-authority": "latest",
     "clsx": "latest",
+    "js-confetti": "0.13.1",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",

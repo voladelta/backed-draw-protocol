@@ -240,6 +240,7 @@ export const recentDraws = [
     market: "NFT Omnipool",
     value: "45.0 ETH",
     ago: "3 min",
+    wallet: "0x7a3f91c2e4b6d8a0f13579bdf2468ace135791c2",
     image: image("ringers-recent"),
   },
   {
@@ -247,6 +248,7 @@ export const recentDraws = [
     market: "Vaulted TCG",
     value: "$92,000",
     ago: "18 min",
+    wallet: "0x42db6e1fa8c09573b2468ace135791c2e4b6d8a0",
     image: image("lotus-recent"),
   },
   {
@@ -254,6 +256,7 @@ export const recentDraws = [
     market: "Pixel Legends",
     value: "18.0 ETH",
     ago: "41 min",
+    wallet: "0x9c14e7b2d5a8036f91c2e4b6d8a0f13579bdf246",
     image: image("noun-recent"),
   },
   {
@@ -261,6 +264,7 @@ export const recentDraws = [
     market: "NFT Omnipool",
     value: "96.0 ETH",
     ago: "1 hr",
+    wallet: "0x13579bdf2468ace7a3f91c2e4b6d8a0f0c42db6e",
     image: image("fidenza-recent"),
   },
   {
@@ -268,6 +272,7 @@ export const recentDraws = [
     market: "Vaulted TCG",
     value: "$45,000",
     ago: "2 hr",
+    wallet: "0xe4b6d8a0f13579bdf2468ace135791c27a3f91c2",
     image: image("pikachu-recent"),
   },
   {
@@ -275,6 +280,7 @@ export const recentDraws = [
     market: "Pixel Legends",
     value: "7.8 ETH",
     ago: "3 hr",
+    wallet: "0x68ace135791c2e4b6d8a0f13579bdf2467a3f91c",
     image: image("moonbird-recent"),
   },
 ]

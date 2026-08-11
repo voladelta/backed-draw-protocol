@@ -16,11 +16,12 @@ import {
   Trophy,
   WalletCards,
 } from "lucide-react"
-import { lazy, Suspense, useState } from "react"
+import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { useAccount, useWriteContract } from "wagmi"
 import { parseUnits, zeroHash } from "viem"
 import { markets, recentDraws } from "@/data/markets"
 import { spinAudio } from "@/audio/spin-audio"
+import { launchRevealConfetti } from "@/lib/reveal-confetti"
 import { cn, formatValue } from "@/lib/utils"
 import type { Market, Position, PullStage, SettlementAsset } from "@/types/protocol"
 import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/contracts"
@@ -30,6 +31,7 @@ const NftCardScene = lazy(() =>
 )
 const prefersReducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+const shortenWallet = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
 
 type PullExperienceProps = {
   market: Market
@@ -49,9 +51,17 @@ type PullExperienceProps = {
 
 export function PullExperience(props: PullExperienceProps) {
   const [carouselIndex, setCarouselIndex] = useState(0)
+  const previousStage = useRef(props.stage)
   const revealedPosition = props.revealedPositionId
     ? props.market.positions.find((position) => position.id === props.revealedPositionId)
     : undefined
+
+  useEffect(() => {
+    const completedSpin = previousStage.current === "drawing" && props.stage === "revealed"
+    previousStage.current = props.stage
+    if (completedSpin) void launchRevealConfetti().catch(() => undefined)
+  }, [props.stage])
+
   return (
     <main className="gacha-page">
       <PoolTabs activeMarketId={props.market.id} onMarketChange={props.onMarketChange} />
@@ -560,7 +570,10 @@ function RecentPulls() {
               <th className="recent-pulls-pool" scope="col">
                 Pool
               </th>
-              <th scope="col">Drawn</th>
+              <th scope="col">Wallet</th>
+              <th className="recent-pulls-drawn" scope="col">
+                Drawn
+              </th>
               <th scope="col">Value</th>
             </tr>
           </thead>
@@ -574,7 +587,12 @@ function RecentPulls() {
                   </span>
                 </td>
                 <td className="recent-pulls-pool">{draw.market}</td>
-                <td>{draw.ago} ago</td>
+                <td>
+                  <span aria-label={draw.wallet} className="recent-wallet" title={draw.wallet}>
+                    {shortenWallet(draw.wallet)}
+                  </span>
+                </td>
+                <td className="recent-pulls-drawn">{draw.ago} ago</td>
                 <td>{draw.value}</td>
               </tr>
             ))}

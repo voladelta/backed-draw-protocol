@@ -35,8 +35,8 @@ describe("reveal confetti", () => {
     expect(addConfetti).toHaveBeenCalledTimes(2)
     expect(addConfetti).toHaveBeenCalledWith({
       confettiColors: ["#caff3a", "#eeffd2", "#70b9ff", "#ffffff", "#ffd166"],
-      confettiNumber: 90,
-      confettiRadius: 5,
+      confettiNumber: 140,
+      confettiRadius: 6,
     })
   })
 

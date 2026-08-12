@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import { ContactShadows, Image, MeshReflectorMaterial, RoundedBox, Text } from "@react-three/drei"
 import { a, useSpring, type SpringValue } from "@react-spring/three"
@@ -12,7 +12,10 @@ import {
   type MeshBasicMaterial,
 } from "three"
 import { spinAudio } from "@/audio/spin-audio"
+import { deckOrder, resolveDeckRelease, riffleOrder, wrapIndex } from "@/components/nft/deck-motion"
 import type { Market, Position, PullStage } from "@/types/protocol"
+
+export type DeckCycleRequest = { id: number; direction: -1 | 1 }
 
 type NftCardSceneProps = {
   market: Market
@@ -20,6 +23,8 @@ type NftCardSceneProps = {
   stage: PullStage
   revealedPosition?: Position
   onSelect: (index: number) => void
+  cycleRequest?: DeckCycleRequest
+  onInspectionChange?: (inspected: boolean) => void
   /** Fires once the reveal flip lands face-up (glow burst + confetti moment). */
   onRevealReady?: () => void
 }
@@ -27,8 +32,6 @@ type NftCardSceneProps = {
 type DragState = {
   pointerId: number
   startX: number
-  startRotation: number
-  targetRotation: number
   samples: Array<{ x: number; time: number }>
   moved: boolean
 }
@@ -37,23 +40,18 @@ const CARD_WIDTH = 2.62
 const CARD_HEIGHT = 3.38
 const CARD_DEPTH = 0.12
 const CARD_RADIUS = 0.16
-const DRAG_RADIANS_PER_PIXEL = 0.0022
+const DECK_EDGE_COLORS = ["#344630", "#293a27", "#20301f"] as const
 const VELOCITY_WINDOW_MS = 90
-const DECELERATION_RATE = 0.96
-const MAX_RELEASE_VELOCITY = 1.6
-const MOTION_BLUR_THRESHOLD = 0.15
-const MAX_MOTION_BLUR_PX = 1.25
-const BANK_LEAN = 0.05
-const BANK_TILT = 0.016
-const BANK_LERP_SPEED = 9
+const DECK_COMMIT_DISTANCE_PX = 72
+const FLIP_PHASE_DURATION_MS = 160
+const SHUFFLE_ROUNDS = 5
 const prefersReducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
-const modulo = (value: number, divisor: number) => ((value % divisor) + divisor) % divisor
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
-const nearestEquivalent = (target: number, current: number) =>
-  target + Math.round((current - target) / (Math.PI * 2)) * Math.PI * 2
-const projectMomentum = (velocity: number) =>
-  (velocity / 1000) * (DECELERATION_RATE / (1 - DECELERATION_RATE))
+const easeInCubic = (value: number) => value * value * value
+const easeOutCubic = (value: number) => 1 - Math.pow(1 - value, 3)
+const easeInOutCubic = (value: number) =>
+  value < 0.5 ? 4 * value * value * value : 1 - Math.pow(-2 * value + 2, 3) / 2
 const releaseVelocity = (samples: DragState["samples"]) => {
   const cutoff = performance.now() - VELOCITY_WINDOW_MS
   const recent = samples.filter((sample) => sample.time >= cutoff)
@@ -61,7 +59,7 @@ const releaseVelocity = (samples: DragState["samples"]) => {
   const last = recent[recent.length - 1]
   const first = recent[0]
   const elapsed = Math.max(last.time - first.time, 1)
-  return ((last.x - first.x) / elapsed) * 1000 * DRAG_RADIANS_PER_PIXEL
+  return ((last.x - first.x) / elapsed) * 1000
 }
 
 function createRoundedRectShape(width: number, height: number, radius: number) {
@@ -98,35 +96,6 @@ function createBottomRoundedRectShape(width: number, height: number, radius: num
   shape.quadraticCurveTo(left, bottom, left, bottom + radius)
   shape.lineTo(left, top)
   return shape
-}
-
-function useMotionBlur(reduced: boolean) {
-  const { gl } = useThree()
-  const blur = useRef(0)
-  const renderedBlur = useRef(0)
-
-  useEffect(() => {
-    const canvas = gl.domElement
-    return () => {
-      canvas.style.filter = ""
-    }
-  }, [gl])
-
-  return (angularVelocity: number, delta: number) => {
-    const target = reduced
-      ? 0
-      : Math.min(
-          MAX_MOTION_BLUR_PX,
-          Math.max(0, Math.abs(angularVelocity) - MOTION_BLUR_THRESHOLD) * 0.55,
-        )
-    const smoothing = 1 - Math.exp(-Math.min(delta, 0.05) * (target > blur.current ? 24 : 14))
-    blur.current += (target - blur.current) * smoothing
-
-    const nextBlur = blur.current < 0.02 ? 0 : Math.round(blur.current * 100) / 100
-    if (nextBlur === renderedBlur.current) return
-    renderedBlur.current = nextBlur
-    gl.domElement.style.filter = nextBlur === 0 ? "" : `blur(${nextBlur}px)`
-  }
 }
 
 function drawRoundedRect(
@@ -302,18 +271,22 @@ function CardFace({
   position,
   asset,
   shine,
+  edgeColor,
 }: {
   position: Position
   asset: Market["asset"]
   shine?: HoverShine
+  edgeColor?: string
 }) {
+  const cardAsset = position.asset ?? asset
   const backing =
-    asset === "ETH"
+    cardAsset === "ETH"
       ? `${position.backing.toFixed(position.backing < 1 ? 3 : 2)} ETH`
       : `$${position.backing.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
   const name = position.name.length > 25 ? `${position.name.slice(0, 24)}…` : position.name
   const collection =
     position.collection.length > 26 ? `${position.collection.slice(0, 25)}…` : position.collection
+  const frameColor = edgeColor ?? position.accent
   const textures = useCardTextures(position.accent)
   const labelShape = useMemo(() => createBottomRoundedRectShape(2.5, 0.6, 0.1), [])
   return (
@@ -321,8 +294,8 @@ function CardFace({
       {/* Body */}
       <RoundedBox args={[CARD_WIDTH, CARD_HEIGHT, CARD_DEPTH]} radius={CARD_RADIUS} smoothness={5}>
         <meshStandardMaterial
-          color={position.accent}
-          emissive={position.accent}
+          color={frameColor}
+          emissive={frameColor}
           emissiveIntensity={0.04}
           metalness={0.35}
           roughness={0.42}
@@ -447,15 +420,51 @@ function FocusCard({
     tiltY: 0,
     config: { tension: 210, friction: 18 },
   }))
-  const spring = useSpring({
-    from: reveal
-      ? { rotation: [0.025, Math.PI, 0] as [number, number, number], scale: 0.9 }
-      : undefined,
-    to: { rotation: [0.025, 0, 0] as [number, number, number], scale: 1.06 },
-    config: { tension: 190, friction: 15, velocity: clamp(initialVelocity, -3, 3) * 0.4 },
-    immediate: reduced,
-    onRest: () => onRest?.(),
-  })
+  const onRestRef = useRef(onRest)
+  const [spring, revealApi] = useSpring(() => ({
+    rotation: reveal
+      ? ([0.025, Math.PI, 0] as [number, number, number])
+      : ([0.025, 0, 0] as [number, number, number]),
+    scale: reveal ? 0.9 : 1.06,
+    immediate: true,
+  }))
+
+  useEffect(() => {
+    onRestRef.current = onRest
+  }, [onRest])
+
+  useEffect(() => {
+    let cancelled = false
+    revealApi.stop()
+
+    if (!reveal) {
+      revealApi.set({ rotation: [0.025, 0, 0], scale: 1.06 })
+      return undefined
+    }
+
+    revealApi.set({ rotation: [0.025, Math.PI, 0], scale: 0.9 })
+    void Promise.all(
+      revealApi.start({
+        rotation: [0.025, 0, 0],
+        scale: 1.06,
+        config: {
+          tension: 190,
+          friction: 15,
+          velocity: clamp(initialVelocity, -3, 3) * 0.4,
+        },
+        immediate: reduced,
+      }),
+    ).then((results) => {
+      if (!cancelled && results.every((result) => result.finished)) {
+        onRestRef.current?.()
+      }
+    })
+
+    return () => {
+      cancelled = true
+      revealApi.stop()
+    }
+  }, [initialVelocity, reduced, reveal, revealApi])
 
   useEffect(() => {
     if (reduced) return undefined
@@ -490,234 +499,624 @@ function FocusCard({
   )
 }
 
-function RingCard({
+type DeckSlot = {
+  x: number
+  y: number
+  z: number
+  rotationX: number
+  rotationY: number
+  rotationZ: number
+  scale: number
+}
+
+function deckSlot(slot: number, count: number, topFaceUp = false): DeckSlot {
+  const depth = Math.min(slot, 11)
+  const buried = slot > 11 ? (slot - 11) * 0.004 : 0
+  const stackWeight = clamp((count - 1) / 10, 0, 1)
+  const lateralStep = 0.006 + stackWeight * 0.007
+  const verticalStep = 0.012 + stackWeight * 0.009
+  const depthStep = 0.012 + stackWeight * 0.006
+  return {
+    x: depth * lateralStep,
+    y: depth * -verticalStep,
+    z: 0.18 - depth * depthStep - buried,
+    rotationX: 0.025,
+    rotationY: slot === 0 && topFaceUp ? 0 : Math.PI,
+    rotationZ: 0,
+    scale: slot === 0 ? 1.025 : 1.018,
+  }
+}
+
+function PeekResponse({
+  active,
+  progress,
+  children,
+}: {
+  active: boolean
+  progress: SpringValue<number>
+  children: ReactNode
+}) {
+  const group = useRef<import("three").Group>(null)
+  useFrame(() => {
+    if (!group.current) return
+    const value = active ? progress.get() : 0
+    group.current.position.y = value * -0.045
+    group.current.position.z = value * 0.16
+    group.current.rotation.y = value * -0.2
+    group.current.scale.setScalar(1 + value * 0.012)
+  })
+  return <group ref={group}>{children}</group>
+}
+
+function DeckCard({
   position,
   asset,
-  index,
+  slot,
   count,
-  rotation,
-  hovered,
+  peek,
   reduced,
-  onHover,
-  onSelect,
+  cycleRequest,
+  faceUp,
+  onAdvance,
+  onCycleRequestHandled,
+  onDraggingChange,
+  onFlip,
+  onPeek,
 }: {
   position: Position
   asset: Market["asset"]
-  index: number
+  slot: number
   count: number
-  rotation: SpringValue<number>
-  hovered: boolean
+  peek: SpringValue<number>
   reduced: boolean
-  onHover: (index: number | null) => void
-  onSelect: (index: number) => void
+  cycleRequest?: DeckCycleRequest
+  faceUp: boolean
+  onAdvance: () => void
+  onCycleRequestHandled: (requestId: number) => void
+  onDraggingChange: (dragging: boolean) => void
+  onFlip: () => void
+  onPeek: (progress: number, immediate?: boolean) => void
 }) {
-  const { viewport } = useThree()
-  const radiusX = Math.min(4.45, viewport.width * 0.43)
-  const radiusZ = 3.25
-  const baseAngle = (index / count) * Math.PI * 2
-  const [hover, hoverApi] = useSpring(() => ({
-    scale: 1,
-    y: 0,
-    shineOpacity: 0,
-    shineOffset: 0,
-    config: { tension: 320, friction: 30 },
-    immediate: reduced,
-  }))
+  const { size, viewport } = useThree()
+  const drag = useRef<DragState | null>(null)
+  const flipping = useRef(false)
+  const routing = useRef(false)
+  const mounted = useRef(true)
+  const lastCycleRequest = useRef(cycleRequest?.id ?? 0)
+  const base = deckSlot(slot, count, faceUp)
+  const [{ x, y, z, rotationX, rotationY, rotationZ, scale, shineOpacity, shineOffset }, api] =
+    useSpring(() => ({
+      ...base,
+      shineOpacity: 0,
+      shineOffset: 0,
+      config: { tension: 280, friction: 29, mass: 0.92 },
+      immediate: reduced,
+    }))
 
   useEffect(() => {
-    void hoverApi.start({
-      scale: hovered ? 1.025 : 1,
-      y: hovered ? 0.04 : 0,
-      shineOpacity: hovered ? 0.82 : 0,
-      ...(!hovered ? { shineOffset: 0 } : {}),
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      drag.current = null
+      flipping.current = false
+      onDraggingChange(false)
+    }
+  }, [onDraggingChange])
+
+  useEffect(() => {
+    if (routing.current || flipping.current || drag.current) return
+    void api.start({
+      ...deckSlot(slot, count, faceUp),
+      shineOpacity: slot === 0 ? shineOpacity.get() : 0,
+      config: { tension: slot === 0 ? 250 : 300, friction: 30, mass: 0.92 },
       immediate: reduced,
     })
-  }, [hoverApi, hovered, reduced])
-  const orbitPosition = rotation.to((value) => {
-    const angle = baseAngle + value
-    const depth = (Math.cos(angle) + 1) / 2
-    return [Math.sin(angle) * radiusX, -0.26 + depth * 0.34, -3.12 + Math.cos(angle) * radiusZ] as [
-      number,
-      number,
-      number,
-    ]
-  })
-  const orbitScale = rotation.to((value) => {
-    const depth = (Math.cos(baseAngle + value) + 1) / 2
-    return 0.42 + depth * 0.62
-  })
-  const orbitRotationY = rotation.to((value) => -Math.sin(baseAngle + value) * 0.56)
-  const orbitRotationZ = rotation.to((value) => Math.sin(baseAngle + value) * -0.035)
-  const orbitOpacity = rotation.to((value) => {
-    const depth = (Math.cos(baseAngle + value) + 1) / 2
-    return 0.34 + depth * 0.66
+  }, [api, count, faceUp, reduced, shineOpacity, slot])
+
+  const returnToSlot = () => {
+    onPeek(0)
+    return api.start({
+      ...deckSlot(slot, count, faceUp),
+      shineOpacity: 0,
+      shineOffset: 0,
+      config: {
+        tension: 310,
+        friction: 29,
+        mass: 0.9,
+      },
+      immediate: reduced,
+    })
+  }
+
+  const flipToFront = async () => {
+    if (slot !== 0 || faceUp || flipping.current || routing.current) return
+    flipping.current = true
+    onPeek(0, true)
+    spinAudio.stop()
+    onFlip()
+    const front = deckSlot(0, count, true)
+
+    if (reduced) {
+      api.set({ ...front, shineOpacity: 0, shineOffset: 0 })
+      flipping.current = false
+      return
+    }
+
+    await Promise.all(
+      api.start({
+        z: 0.32,
+        rotationX: 0.04,
+        rotationY: Math.PI / 2,
+        rotationZ: -0.012,
+        scale: 1.04,
+        shineOpacity: 0,
+        config: (key) => ({
+          duration: FLIP_PHASE_DURATION_MS,
+          easing: key === "rotationY" ? easeInCubic : easeOutCubic,
+        }),
+      }),
+    )
+    if (!mounted.current) return
+    await Promise.all(
+      api.start({
+        ...front,
+        shineOpacity: 0,
+        shineOffset: 0,
+        config: (key) => ({
+          duration: FLIP_PHASE_DURATION_MS,
+          easing: key === "rotationY" ? easeOutCubic : easeInOutCubic,
+        }),
+      }),
+    )
+    flipping.current = false
+  }
+
+  const cycleToBack = async (direction: -1 | 1, velocityPx = 0) => {
+    if (slot !== 0 || routing.current || flipping.current) return
+    routing.current = true
+    drag.current = null
+    onDraggingChange(false)
+    spinAudio.start()
+    const worldVelocity = (velocityPx * viewport.width) / Math.max(size.width, 1)
+
+    if (!reduced) {
+      await Promise.all(
+        api.start({
+          x: direction * 2.35,
+          y: 0.16,
+          z: 0.62,
+          rotationX: -0.035,
+          rotationY: (faceUp ? 0 : Math.PI) + direction * 0.34,
+          rotationZ: direction * -0.18,
+          scale: 1.055,
+          shineOpacity: 0,
+          config: (key) => ({
+            tension: 235,
+            friction: 24,
+            mass: 0.88,
+            velocity: key === "x" ? direction * clamp(Math.abs(worldVelocity), 0, 2.4) : 0,
+          }),
+        }),
+      )
+    }
+    if (!mounted.current) return
+
+    onAdvance()
+    onPeek(0, true)
+    const back = deckSlot(count - 1, count)
+    await Promise.all(
+      api.start({
+        x: direction * 2.55,
+        y: back.y + 0.08,
+        z: back.z - 0.18,
+        rotationX: back.rotationX,
+        rotationY: Math.PI + direction * 0.12,
+        rotationZ: direction * 0.08,
+        scale: back.scale,
+        config: { tension: 245, friction: 27, mass: 0.94 },
+        immediate: reduced,
+      }),
+    )
+    if (!mounted.current) return
+    await Promise.all(
+      api.start({
+        ...back,
+        shineOpacity: 0,
+        shineOffset: 0,
+        config: { tension: 270, friction: 30, mass: 0.95 },
+        immediate: reduced,
+      }),
+    )
+    routing.current = false
+    onPeek(0, true)
+    spinAudio.settle()
+  }
+
+  useEffect(() => {
+    if (
+      !cycleRequest ||
+      slot !== 0 ||
+      routing.current ||
+      cycleRequest.id === lastCycleRequest.current
+    )
+      return
+    lastCycleRequest.current = cycleRequest.id
+    onCycleRequestHandled(cycleRequest.id)
+    void cycleToBack(cycleRequest.direction)
   })
 
+  const settleDrag = () => {
+    const current = drag.current
+    if (!current) return
+    drag.current = null
+    onDraggingChange(false)
+    const lastSample = current.samples[current.samples.length - 1]
+    const distance = (lastSample?.x ?? current.startX) - current.startX
+    const velocity = releaseVelocity(current.samples)
+    const release = resolveDeckRelease(distance, velocity, DECK_COMMIT_DISTANCE_PX)
+    if (!current.moved) {
+      onPeek(0)
+      spinAudio.stop()
+      if (!faceUp) void flipToFront()
+      else void returnToSlot()
+      return
+    }
+    if (!release.commit) {
+      void returnToSlot()
+      spinAudio.stop()
+      return
+    }
+    void cycleToBack(release.direction, velocity)
+  }
+
+  const interactive = slot === 0 && !routing.current
   return (
     <a.group
-      position={orbitPosition as never}
-      rotation-y={orbitRotationY}
-      rotation-z={orbitRotationZ}
-      scale={orbitScale}
+      onPointerCancel={interactive ? settleDrag : undefined}
+      onPointerDown={
+        interactive
+          ? (event) => {
+              if (routing.current || flipping.current) return
+              event.stopPropagation()
+              ;(
+                event.target as unknown as {
+                  setPointerCapture?: (pointerId: number) => void
+                } | null
+              )?.setPointerCapture?.(event.pointerId)
+              api.stop()
+              spinAudio.prepare()
+              onDraggingChange(true)
+              drag.current = {
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                samples: [{ x: event.clientX, time: performance.now() }],
+                moved: false,
+              }
+              void api.start({
+                z: z.get() + 0.06,
+                scale: 1.035,
+                shineOpacity: reduced ? 0 : 0.58,
+                config: { tension: 360, friction: 29 },
+                immediate: reduced,
+              })
+            }
+          : undefined
+      }
+      onPointerMove={
+        interactive
+          ? (event) => {
+              if (routing.current || flipping.current) return
+              const current = drag.current
+              if (!current || current.pointerId !== event.pointerId) {
+                if (event.uv && !reduced) {
+                  void api.start({ shineOffset: clamp(0.5 - event.uv.x, -0.42, 0.42) })
+                }
+                return
+              }
+              event.stopPropagation()
+              const now = performance.now()
+              const distancePx = event.clientX - current.startX
+              const worldDistance = (distancePx * viewport.width) / Math.max(size.width, 1)
+              const progress = clamp(Math.abs(distancePx) / DECK_COMMIT_DISTANCE_PX, 0, 1)
+              current.samples.push({ x: event.clientX, time: now })
+              current.samples = current.samples.filter(
+                (sample) => now - sample.time <= VELOCITY_WINDOW_MS,
+              )
+              current.moved ||= Math.abs(distancePx) > 8
+              onPeek(progress, true)
+              api.set({
+                x: worldDistance,
+                y: Math.abs(worldDistance) * 0.055,
+                z: 0.26 + Math.abs(worldDistance) * 0.11,
+                rotationX: 0.025 - Math.abs(worldDistance) * 0.014,
+                rotationY: (faceUp ? 0 : Math.PI) + worldDistance * 0.085,
+                rotationZ: worldDistance * -0.11,
+                shineOffset: clamp(-worldDistance * 0.18, -0.42, 0.42),
+              })
+            }
+          : undefined
+      }
+      onPointerOut={
+        interactive
+          ? () => {
+              if (routing.current || flipping.current) return
+              if (!drag.current) void api.start({ shineOpacity: 0, shineOffset: 0 })
+            }
+          : undefined
+      }
+      onPointerOver={
+        interactive
+          ? () => {
+              if (routing.current || flipping.current) return
+              if (!drag.current && !reduced) void api.start({ shineOpacity: 0.72 })
+            }
+          : undefined
+      }
+      onPointerUp={
+        interactive
+          ? (event) => {
+              if (routing.current || flipping.current) return
+              if (drag.current?.pointerId !== event.pointerId) return
+              settleDrag()
+            }
+          : undefined
+      }
+      position-x={x}
+      position-y={y}
+      position-z={z}
+      rotation-x={rotationX}
+      rotation-y={rotationY}
+      rotation-z={rotationZ}
+      scale={scale}
     >
-      <a.group
-        onClick={(event) => {
-          event.stopPropagation()
-          onSelect(index)
-        }}
-        onPointerOut={() => onHover(null)}
-        onPointerOver={(event) => {
-          event.stopPropagation()
-          onHover(index)
-        }}
-        onPointerMove={(event) => {
-          event.stopPropagation()
-          onHover(index)
-          if (!event.uv) return
-          void hoverApi.start({
-            shineOffset: reduced ? 0 : clamp(0.5 - event.uv.x, -0.42, 0.42),
-          })
-        }}
-        position-y={hover.y}
-        scale={hover.scale}
-      >
-        {/* Depth veil: dims cards as they recede */}
-        <a.mesh position={[0, 0, 0.082]}>
-          <planeGeometry args={[CARD_WIDTH + 0.02, CARD_HEIGHT + 0.02]} />
-          <a.meshBasicMaterial
-            color="#050905"
-            depthWrite={false}
-            opacity={orbitOpacity.to((value) => 1 - value)}
-            transparent
-          />
-        </a.mesh>
+      <PeekResponse active={slot === 1} progress={peek}>
         <CardFace
           asset={asset}
+          edgeColor={
+            slot === 0 ? undefined : DECK_EDGE_COLORS[(slot - 1) % DECK_EDGE_COLORS.length]
+          }
           position={position}
-          shine={{ offset: hover.shineOffset, opacity: hover.shineOpacity }}
+          shine={{ offset: shineOffset, opacity: shineOpacity }}
         />
-      </a.group>
+      </PeekResponse>
     </a.group>
   )
 }
 
-function CircularRing({
-  positions,
-  asset,
-  rotation,
-  hovered,
-  reduced,
-  onHover,
-  onSelect,
-}: {
-  positions: Position[]
-  asset: Market["asset"]
-  rotation: SpringValue<number>
-  hovered: number | null
-  reduced: boolean
-  onHover: (index: number | null) => void
-  onSelect: (index: number) => void
-}) {
-  return positions.map((position, index) => (
-    <RingCard
-      count={positions.length}
-      asset={asset}
-      hovered={hovered === index}
-      index={index}
-      key={position.id}
-      onHover={onHover}
-      onSelect={onSelect}
-      position={position}
-      reduced={reduced}
-      rotation={rotation}
-    />
-  ))
-}
-
-/** Applies velocity-proportional lean/tilt banking to a spinning group. */
-function useBanking(rotation: SpringValue<number>, reduced: boolean) {
-  const group = useRef<import("three").Group>(null)
-  const bank = useRef(0)
-  const previousRotation = useRef(rotation.get())
-
-  useFrame((_, delta) => {
-    const currentRotation = rotation.get()
-    const speed = (currentRotation - previousRotation.current) / Math.max(delta, 0.001)
-    previousRotation.current = currentRotation
-    const target = reduced ? 0 : clamp(speed * 0.04, -1, 1)
-    const smoothing = 1 - Math.exp(-Math.min(delta, 0.05) * BANK_LERP_SPEED)
-    bank.current += (target - bank.current) * smoothing
-    if (group.current) {
-      group.current.rotation.z = bank.current * BANK_LEAN
-      group.current.rotation.x = -Math.abs(bank.current) * BANK_TILT
-    }
-  })
-
-  return { group, bank }
-}
-
-function SpinningRing({
+function InspectableDeck({
   positions,
   asset,
   activeIndex,
   reduced,
-  onVelocity,
+  cycleRequest,
+  onInspectionChange,
+  onSelect,
+  onDraggingChange,
 }: {
   positions: Position[]
   asset: Market["asset"]
   activeIndex: number
   reduced: boolean
-  onVelocity?: (velocity: number) => void
+  cycleRequest?: DeckCycleRequest
+  onInspectionChange?: (inspected: boolean) => void
+  onSelect: (index: number) => void
+  onDraggingChange: (dragging: boolean) => void
 }) {
-  const step = (Math.PI * 2) / positions.length
-  const previousRotation = useRef(-activeIndex * step)
-  const applyMotionBlur = useMotionBlur(reduced)
-  const spin = useSpring({
-    from: { rotation: -activeIndex * step, scale: 0.96 },
-    to: {
-      rotation: -activeIndex * step + (reduced ? 0 : Math.PI * 2 * 3),
-      scale: 1.015,
-    },
-    config: { mass: 2.1, tension: 26, friction: 11.5 },
+  const [faceUp, setFaceUp] = useState(false)
+  const order = deckOrder(positions.length, activeIndex)
+  const slotByIndex = useMemo(
+    () => new Map(order.map((positionIndex, slot) => [positionIndex, slot])),
+    [order],
+  )
+  const [{ peek }, peekApi] = useSpring(() => ({
+    peek: 0,
+    config: { tension: 320, friction: 31 },
     immediate: reduced,
-    onRest: () => spinAudio.settle(),
-  })
-  const { group } = useBanking(spin.rotation, reduced)
+  }))
+  const handledCycleRequest = useRef(cycleRequest?.id ?? 0)
+  const pendingCycleRequest =
+    cycleRequest && cycleRequest.id > handledCycleRequest.current
+      ? { id: handledCycleRequest.current + 1, direction: cycleRequest.direction }
+      : undefined
+  const updatePeek = (progress: number, immediate = false) => {
+    if (immediate) peek.set(reduced ? 0 : progress)
+    else void peekApi.start({ peek: reduced ? 0 : progress })
+  }
 
-  useFrame((_, delta) => {
-    const currentRotation = spin.rotation.get()
-    const speed = (currentRotation - previousRotation.current) / Math.max(delta, 0.001)
-    previousRotation.current = currentRotation
-    applyMotionBlur(speed, delta)
-    spinAudio.update(speed, currentRotation, step)
-    onVelocity?.(speed)
-  })
-
-  useEffect(() => () => spinAudio.stop(), [])
+  useEffect(() => {
+    setFaceUp(false)
+    onInspectionChange?.(false)
+  }, [activeIndex, onInspectionChange])
 
   return (
-    <a.group scale={spin.scale}>
-      <group ref={group}>
-        <CircularRing
-          asset={asset}
-          hovered={null}
-          onHover={() => undefined}
-          onSelect={() => undefined}
-          positions={positions}
-          reduced={reduced}
-          rotation={spin.rotation}
-        />
-      </group>
-    </a.group>
+    <group position={[0, -0.08, 0]}>
+      {positions
+        .map((position, positionIndex) => ({
+          position,
+          positionIndex,
+          slot: slotByIndex.get(positionIndex) ?? positions.length - 1,
+        }))
+        .sort((a, b) => b.slot - a.slot)
+        .map(({ position, slot }) => (
+          <DeckCard
+            asset={asset}
+            count={positions.length}
+            cycleRequest={slot === 0 ? pendingCycleRequest : undefined}
+            faceUp={slot === 0 && faceUp}
+            key={position.id}
+            onAdvance={() => {
+              setFaceUp(false)
+              onInspectionChange?.(false)
+              onSelect(wrapIndex(activeIndex + 1, positions.length))
+            }}
+            onCycleRequestHandled={(requestId) => {
+              handledCycleRequest.current = requestId
+            }}
+            onDraggingChange={onDraggingChange}
+            onFlip={() => {
+              setFaceUp(true)
+              onInspectionChange?.(true)
+            }}
+            onPeek={updatePeek}
+            peek={peek}
+            position={position}
+            reduced={reduced}
+            slot={slot}
+          />
+        ))}
+    </group>
   )
 }
 
-function ArtifactOrbit({
+function ShuffleCard({
+  position,
+  asset,
+  index,
+  count,
+  finalSlot,
+  reduced,
+  progress,
+}: {
+  position: Position
+  asset: Market["asset"]
+  index: number
+  count: number
+  finalSlot: number
+  reduced: boolean
+  progress: SpringValue<number>
+}) {
+  const group = useRef<import("three").Group>(null)
+  const split = Math.ceil(count / 2)
+  const inLeftPacket = index < split
+  const packetIndex = inLeftPacket ? index : index - split
+  const packetSide = inLeftPacket ? -1 : 1
+  const start = deckSlot(index, count)
+  const target = deckSlot(finalSlot, count)
+  const smooth = (value: number) => value * value * (3 - 2 * value)
+
+  useFrame(() => {
+    const card = group.current
+    if (!card) return
+    const overall = reduced ? 1 : clamp(progress.get(), 0, 1)
+    const scaled = overall * SHUFFLE_ROUNDS
+    const round = overall >= 1 ? SHUFFLE_ROUNDS - 1 : Math.floor(scaled)
+    const value = overall >= 1 ? 1 : scaled - round
+    const side = packetSide * (round % 2 === 0 ? 1 : -1)
+    const roundTarget = round === SHUFFLE_ROUNDS - 1 ? target : start
+    let x = start.x
+    let y = start.y
+    let z = start.z
+    let rotationX = start.rotationX
+    let rotationZ = start.rotationZ
+    let scale = start.scale
+
+    if (value < 0.28) {
+      const phase = smooth(value / 0.28)
+      x = start.x + (side * 1.2 - start.x) * phase
+      y = start.y + (0.1 + packetIndex * 0.04 - start.y) * phase
+      z = start.z + (0.28 - packetIndex * 0.06 - start.z) * phase
+      rotationX = start.rotationX + (side * -0.12 - start.rotationX) * phase
+      rotationZ = start.rotationZ + (side * 0.11 - start.rotationZ) * phase
+      scale = start.scale + (1 - start.scale) * phase
+    } else if (value < 0.62) {
+      const phase = smooth((value - 0.28) / 0.34)
+      x = side * (1.2 - phase * 0.9)
+      y = 0.1 + packetIndex * 0.04 + Math.sin(phase * Math.PI) * 0.17
+      z = 0.28 - packetIndex * 0.06 + Math.sin(phase * Math.PI) * 0.16
+      rotationX = side * (-0.12 + phase * 0.055)
+      rotationZ = side * (0.11 - phase * 0.07)
+      scale = 1
+    } else {
+      const stagger = (finalSlot / Math.max(count - 1, 1)) * 0.11
+      const phase = smooth(clamp((value - 0.62 - stagger) / 0.22, 0, 1))
+      x = side * 0.3 + (roundTarget.x - side * 0.3) * phase
+      y = 0.1 + packetIndex * 0.035 + (roundTarget.y - 0.1 - packetIndex * 0.035) * phase
+      z = 0.28 - packetIndex * 0.055 + (roundTarget.z - 0.28 + packetIndex * 0.055) * phase
+      rotationX = side * -0.065 + (roundTarget.rotationX - side * -0.065) * phase
+      rotationZ = side * 0.04 + (roundTarget.rotationZ - side * 0.04) * phase
+      scale = 1 + (roundTarget.scale - 1) * phase
+    }
+
+    card.position.set(x, y, z)
+    card.rotation.set(rotationX, Math.PI, rotationZ)
+    card.scale.setScalar(scale)
+  })
+
+  return (
+    <group ref={group}>
+      <CardFace asset={asset} position={position} />
+    </group>
+  )
+}
+
+function ShufflingDeck({
+  positions,
+  asset,
+  activeIndex,
+  reduced,
+}: {
+  positions: Position[]
+  asset: Market["asset"]
+  activeIndex: number
+  reduced: boolean
+}) {
+  const visibleCount = Math.min(positions.length, 10)
+  const orderedIndices = deckOrder(positions.length, activeIndex).slice(0, visibleCount)
+  const interleaved = riffleOrder(visibleCount)
+  const finalSlotByInitialSlot = new Map(
+    interleaved.map((initialSlot, finalSlot) => [initialSlot, finalSlot]),
+  )
+  const previousProgress = useRef(0)
+  const [{ progress }] = useSpring(() => ({
+    from: { progress: 0 },
+    to: { progress: 1 },
+    config: { duration: reduced ? 1 : 1450 },
+    immediate: reduced,
+    onRest: () => spinAudio.settle(),
+  }))
+
+  useFrame((_, delta) => {
+    if (reduced) return
+    const current = progress.get()
+    const speed = ((current - previousProgress.current) / Math.max(delta, 0.001)) * 9
+    previousProgress.current = current
+    spinAudio.update(speed, current * SHUFFLE_ROUNDS * 12, 1)
+  })
+  useEffect(() => () => spinAudio.stop(), [])
+
+  return (
+    <group position={[0, -0.08, 0]}>
+      {orderedIndices
+        .map((positionIndex, initialSlot) => ({
+          position: positions[positionIndex],
+          initialSlot,
+          finalSlot: finalSlotByInitialSlot.get(initialSlot) ?? initialSlot,
+        }))
+        .sort((a, b) => b.finalSlot - a.finalSlot)
+        .map(({ position, initialSlot, finalSlot }) => (
+          <ShuffleCard
+            asset={asset}
+            count={visibleCount}
+            finalSlot={finalSlot}
+            index={initialSlot}
+            key={position.id}
+            position={position}
+            progress={progress}
+            reduced={reduced}
+          />
+        ))}
+    </group>
+  )
+}
+
+function ArtifactDeck({
   market,
   activeIndex,
   stage,
   revealedPosition,
   onSelect,
+  cycleRequest,
+  onInspectionChange,
   onDraggingChange,
   onRevealReady,
 }: Omit<NftCardSceneProps, "onRevealReady"> & {
@@ -726,84 +1125,21 @@ function ArtifactOrbit({
 }) {
   const positions = market.positions
   const positionCount = positions.length
-  const selectedIndex = positionCount === 0 ? 0 : modulo(activeIndex, positionCount)
+  const selectedIndex = positionCount === 0 ? 0 : wrapIndex(activeIndex, positionCount)
   const selectedPosition = positions[selectedIndex]
-  const step = (Math.PI * 2) / Math.max(positionCount, 1)
-  const drag = useRef<DragState | null>(null)
-  const isSettling = useRef(false)
-  const motionGeneration = useRef(0)
-  const audioActive = useRef(false)
-  const previousAudioRotation = useRef(-selectedIndex * step)
-  const lastSelectedIndex = useRef(selectedIndex)
-  const suppressClickUntil = useRef(0)
-  const drawVelocity = useRef(0)
   const revealAnnounced = useRef(false)
-  const [hovered, setHovered] = useState<number | null>(null)
   const reduced = prefersReducedMotion()
-  const applyMotionBlur = useMotionBlur(reduced)
-  const supportsHover =
-    typeof window !== "undefined" && window.matchMedia("(hover: hover) and (pointer: fine)").matches
-  const [{ rotation }, api] = useSpring(() => ({
-    rotation: -selectedIndex * step,
-    config: { tension: 175, friction: 24 },
-    immediate: reduced,
-  }))
-  const { group: bankGroup } = useBanking(rotation, reduced)
 
   useEffect(() => {
     if (stage === "drawing") revealAnnounced.current = false
   }, [stage])
 
-  useFrame((_, delta) => {
-    if (stage !== "configure" || positionCount === 0) return
-    const activeDrag = drag.current
-    if (activeDrag) {
-      rotation.set(activeDrag.targetRotation)
-    }
-    const currentRotation = rotation.get()
-    const speed = (currentRotation - previousAudioRotation.current) / Math.max(delta, 0.001)
-    applyMotionBlur(speed, delta)
-    if (audioActive.current) {
-      spinAudio.update(speed, currentRotation, step)
-    }
-    previousAudioRotation.current = currentRotation
-  })
-
-  useEffect(() => () => spinAudio.stop(), [])
-
-  useEffect(() => {
-    if (drag.current || lastSelectedIndex.current === selectedIndex) return
-    lastSelectedIndex.current = selectedIndex
-    spinAudio.start()
-    audioActive.current = true
-    previousAudioRotation.current = rotation.get()
-    const generation = ++motionGeneration.current
-    isSettling.current = true
-    void api.start({
-      rotation: nearestEquivalent(-selectedIndex * step, rotation.get()),
-      config: { tension: 175, friction: 24 },
-      immediate: reduced,
-      onRest: () => {
-        if (motionGeneration.current === generation) {
-          isSettling.current = false
-          if (audioActive.current) {
-            audioActive.current = false
-            spinAudio.settle()
-          }
-        }
-      },
-    })
-  }, [api, reduced, rotation, selectedIndex, step])
-
   if (!selectedPosition) return null
   if (stage === "drawing") {
     return (
-      <SpinningRing
+      <ShufflingDeck
         activeIndex={selectedIndex}
         asset={market.asset}
-        onVelocity={(velocity) => {
-          drawVelocity.current = velocity
-        }}
         positions={positions}
         reduced={reduced}
       />
@@ -821,7 +1157,7 @@ function ArtifactOrbit({
     return (
       <FocusCard
         asset={market.asset}
-        initialVelocity={stage === "revealed" ? drawVelocity.current : 0}
+        initialVelocity={0}
         onRest={handleRevealRest}
         position={revealedPosition ?? selectedPosition}
         reduced={reduced}
@@ -829,132 +1165,17 @@ function ArtifactOrbit({
       />
     )
   }
-
-  const selectCard = (index: number) => {
-    if (performance.now() < suppressClickUntil.current) return
-    const nextIndex = modulo(index, positionCount)
-    lastSelectedIndex.current = nextIndex
-    spinAudio.start()
-    audioActive.current = true
-    previousAudioRotation.current = rotation.get()
-    const generation = ++motionGeneration.current
-    isSettling.current = true
-    void api.start({
-      rotation: nearestEquivalent(-nextIndex * step, rotation.get()),
-      config: { tension: 175, friction: 24 },
-      immediate: reduced,
-      onRest: () => {
-        if (motionGeneration.current === generation) {
-          isSettling.current = false
-          audioActive.current = false
-          spinAudio.settle()
-        }
-      },
-    })
-    onSelect(nextIndex)
-  }
-
-  const settleDrag = () => {
-    const current = drag.current
-    if (!current) return
-    drag.current = null
-    onDraggingChange(false)
-    if (!current.moved) {
-      isSettling.current = false
-      audioActive.current = false
-      spinAudio.stop()
-      return
-    }
-    rotation.set(current.targetRotation)
-    const velocity = clamp(
-      releaseVelocity(current.samples),
-      -MAX_RELEASE_VELOCITY,
-      MAX_RELEASE_VELOCITY,
-    )
-    const currentRotation = current.targetRotation
-    const projectedRotation = reduced
-      ? currentRotation
-      : currentRotation + projectMomentum(velocity)
-    const snappedRotation = Math.round(projectedRotation / step) * step
-    const nextIndex = modulo(-Math.round(snappedRotation / step), positionCount)
-    if (current.moved) suppressClickUntil.current = performance.now() + 180
-    lastSelectedIndex.current = nextIndex
-    const generation = ++motionGeneration.current
-    isSettling.current = true
-    void api.start({
-      rotation: snappedRotation,
-      config: {
-        mass: 1.1,
-        tension: 80,
-        friction: 19,
-        velocity: reduced ? 0 : velocity,
-      },
-      immediate: reduced,
-      onRest: () => {
-        if (motionGeneration.current === generation) {
-          isSettling.current = false
-          audioActive.current = false
-          spinAudio.settle()
-        }
-      },
-    })
-    onSelect(nextIndex)
-  }
-
   return (
-    <group
-      onPointerCancel={settleDrag}
-      onPointerDown={(event) => {
-        event.stopPropagation()
-        ;(
-          event.target as unknown as { setPointerCapture?: (pointerId: number) => void } | null
-        )?.setPointerCapture?.(event.pointerId)
-        motionGeneration.current += 1
-        api.stop()
-        isSettling.current = false
-        spinAudio.start()
-        audioActive.current = true
-        previousAudioRotation.current = rotation.get()
-        onDraggingChange(true)
-        const now = performance.now()
-        drag.current = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startRotation: rotation.get(),
-          targetRotation: rotation.get(),
-          samples: [{ x: event.clientX, time: now }],
-          moved: false,
-        }
-      }}
-      onPointerMove={(event) => {
-        const current = drag.current
-        if (!current || current.pointerId !== event.pointerId) return
-        const now = performance.now()
-        const delta = event.clientX - current.startX
-        current.targetRotation = current.startRotation + delta * DRAG_RADIANS_PER_PIXEL
-        current.samples.push({ x: event.clientX, time: now })
-        current.samples = current.samples.filter(
-          (sample) => now - sample.time <= VELOCITY_WINDOW_MS,
-        )
-        current.moved ||= Math.abs(delta) > 5
-      }}
-      onPointerUp={(event) => {
-        if (drag.current?.pointerId !== event.pointerId) return
-        settleDrag()
-      }}
-    >
-      <group ref={bankGroup}>
-        <CircularRing
-          asset={market.asset}
-          hovered={hovered}
-          onHover={(index) => setHovered(supportsHover ? index : null)}
-          onSelect={selectCard}
-          positions={positions}
-          reduced={reduced}
-          rotation={rotation}
-        />
-      </group>
-    </group>
+    <InspectableDeck
+      activeIndex={selectedIndex}
+      asset={market.asset}
+      cycleRequest={cycleRequest}
+      onInspectionChange={onInspectionChange}
+      onDraggingChange={onDraggingChange}
+      onSelect={onSelect}
+      positions={positions}
+      reduced={reduced}
+    />
   )
 }
 
@@ -994,11 +1215,7 @@ export function NftCardScene({ onRevealReady, ...props }: NftCardSceneProps) {
       <ContactShadows opacity={0.46} position={[0, -2.02, 0]} scale={10} blur={2.5} far={4} />
       <RevealGlow effects={revealCard.effects} />
       <Suspense fallback={null}>
-        <ArtifactOrbit
-          {...props}
-          onDraggingChange={setDragging}
-          onRevealReady={handleRevealReady}
-        />
+        <ArtifactDeck {...props} onDraggingChange={setDragging} onRevealReady={handleRevealReady} />
       </Suspense>
     </Canvas>
   )

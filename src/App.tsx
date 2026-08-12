@@ -17,7 +17,7 @@ import {
   RewardsHub,
 } from "@/components/support/support-pages"
 import { WalletButton } from "@/components/web3/wallet-button"
-import { markets } from "@/data/markets"
+import { marketForPoolSelection } from "@/data/pool-selection"
 import { useProtocolStore } from "@/store/use-protocol-store"
 
 function RootLayout() {
@@ -59,7 +59,7 @@ function RootLayout() {
 
 function PullRoute() {
   const store = useProtocolStore()
-  const market = markets.find((item) => item.id === store.selectedMarketId) ?? markets[0]
+  const market = marketForPoolSelection(store.selectedMarketId)
   return (
     <PullExperience
       count={store.pullCount}

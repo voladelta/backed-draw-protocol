@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import { markets } from "@/data/markets"
+import { ALL_POOLS_ID, marketForPoolSelection, selectPreviewPosition } from "@/data/pool-selection"
 import type { PullStage, SettlementAsset, SettlementChoice } from "@/types/protocol"
 
 type ProtocolState = {
@@ -24,13 +24,23 @@ type ProtocolState = {
 }
 
 export const useProtocolStore = create<ProtocolState>((set) => ({
-  selectedMarketId: markets[0].id,
+  selectedMarketId: ALL_POOLS_ID,
   assetFilter: "ALL",
   pullOpen: false,
   pullCount: 1,
   paymentAsset: "ETH",
   pullStage: "configure",
-  selectMarket: (selectedMarketId) => set({ selectedMarketId }),
+  selectMarket: (selectedMarketId) =>
+    set((state) =>
+      state.selectedMarketId === selectedMarketId
+        ? state
+        : {
+            selectedMarketId,
+            pullStage: "configure",
+            settlementChoice: undefined,
+            revealedPositionId: undefined,
+          },
+    ),
   setAssetFilter: (assetFilter) => set({ assetFilter }),
   openPull: (marketId) =>
     set((state) => ({
@@ -53,10 +63,9 @@ export const useProtocolStore = create<ProtocolState>((set) => ({
   setPullStage: (pullStage) => set({ pullStage }),
   reveal: () =>
     set((state) => {
-      const market = markets.find((item) => item.id === state.selectedMarketId) ?? markets[0]
-      const position =
-        market.positions[(state.pullCount + market.activePositions) % market.positions.length]
-      return { pullStage: "revealed", revealedPositionId: position.id }
+      const market = marketForPoolSelection(state.selectedMarketId)
+      const position = selectPreviewPosition(market)
+      return { pullStage: "revealed", revealedPositionId: position?.id }
     }),
   settle: (settlementChoice) => set({ settlementChoice, pullStage: "settled" }),
   resetPull: () =>

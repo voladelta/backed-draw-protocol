@@ -10,6 +10,9 @@ export type Position = {
   probability: number
   earnings: number
   accent: string
+  asset?: SettlementAsset
+  sourceMarketId?: string
+  sourceMarketName?: string
 }
 
 export type Market = {

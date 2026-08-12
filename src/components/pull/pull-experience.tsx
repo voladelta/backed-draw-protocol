@@ -6,6 +6,7 @@ import {
   Coins,
   Crown,
   Dices,
+  Layers3,
   Minus,
   Plus,
   ReceiptText,
@@ -15,15 +16,17 @@ import {
   Trophy,
   WalletCards,
 } from "lucide-react"
-import { lazy, Suspense, useState } from "react"
+import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { useAccount, useWriteContract } from "wagmi"
 import { parseUnits, zeroHash } from "viem"
-import { markets, recentDraws } from "@/data/markets"
+import { recentDraws } from "@/data/markets"
+import { ALL_POOLS_ID, poolOptions } from "@/data/pool-selection"
 import { spinAudio } from "@/audio/spin-audio"
 import { launchRevealConfetti } from "@/lib/reveal-confetti"
 import { cn, formatValue } from "@/lib/utils"
 import type { Market, Position, PullStage, SettlementAsset } from "@/types/protocol"
 import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/contracts"
+import type { DeckCycleRequest } from "@/components/nft/nft-card-scene"
 
 const NftCardScene = lazy(() =>
   import("@/components/nft/nft-card-scene").then((module) => ({ default: module.NftCardScene })),
@@ -66,14 +69,14 @@ export function PullExperience(props: PullExperienceProps) {
       >
         <StageArtifact
           activeIndex={carouselIndex}
-          key={props.market.id}
+          key={`stage-${props.market.id}`}
           market={props.market}
           onRevealReady={celebrateReveal}
           onSelect={setCarouselIndex}
           position={revealedPosition}
           stage={props.stage}
         />
-        <PullCommand {...props} key={props.market.id} position={revealedPosition} />
+        <PullCommand {...props} key={`command-${props.market.id}`} position={revealedPosition} />
       </section>
       <RecentPulls />
       <p aria-live="polite" className="sr-only" role="status">
@@ -97,7 +100,7 @@ function PoolTabs({
   onMarketChange: (marketId: string) => void
 }) {
   const selectTab = (index: number) => {
-    const nextMarket = markets[index]
+    const nextMarket = poolOptions[index]
     if (!nextMarket) return
     onMarketChange(nextMarket.id)
     window.requestAnimationFrame(() =>
@@ -108,8 +111,9 @@ function PoolTabs({
   return (
     <div className="pool-tabs-scroll">
       <div aria-label="Select a pool" className="pool-tabs" role="tablist">
-        {markets.map((item, index) => {
+        {poolOptions.map((item, index) => {
           const isActive = item.id === activeMarketId
+          const isAllPools = item.id === ALL_POOLS_ID
           return (
             <button
               aria-controls="pool-panel"
@@ -121,11 +125,11 @@ function PoolTabs({
               onKeyDown={(event) => {
                 if (event.key === "ArrowLeft") {
                   event.preventDefault()
-                  selectTab((index - 1 + markets.length) % markets.length)
+                  selectTab((index - 1 + poolOptions.length) % poolOptions.length)
                 }
                 if (event.key === "ArrowRight") {
                   event.preventDefault()
-                  selectTab((index + 1) % markets.length)
+                  selectTab((index + 1) % poolOptions.length)
                 }
                 if (event.key === "Home") {
                   event.preventDefault()
@@ -133,19 +137,27 @@ function PoolTabs({
                 }
                 if (event.key === "End") {
                   event.preventDefault()
-                  selectTab(markets.length - 1)
+                  selectTab(poolOptions.length - 1)
                 }
               }}
               role="tab"
               tabIndex={isActive ? 0 : -1}
               type="button"
             >
-              <img alt="" src={item.heroImage} />
+              {isAllPools ? (
+                <span aria-hidden="true" className="pool-tab-all-icon">
+                  <Layers3 />
+                </span>
+              ) : (
+                <img alt="" src={item.heroImage} />
+              )}
               <span>
                 <strong>{item.name}</strong>
-                <small>{item.activePositions} live</small>
+                <small>
+                  {isAllPools ? `${poolOptions.length - 1} pools` : `${item.activePositions} live`}
+                </small>
               </span>
-              <em>{formatValue(item.pullPrice, item.asset)}</em>
+              <em>{isAllPools ? "Any card" : formatValue(item.pullPrice, item.asset)}</em>
             </button>
           )
         })}
@@ -169,15 +181,18 @@ function StageArtifact({
   onSelect: (index: number) => void
   onRevealReady: () => void
 }) {
+  const isAllPools = market.id === ALL_POOLS_ID
+  const [cycleRequest, setCycleRequest] = useState<DeckCycleRequest>({ id: 0, direction: 1 })
+  const [inspected, setInspected] = useState(false)
   const selectedIndex =
     market.positions.length === 0
       ? 0
       : ((activeIndex % market.positions.length) + market.positions.length) %
         market.positions.length
   const selectedPosition = market.positions[selectedIndex]
-  const selectRelative = (distance: number) => {
+  const cycleCard = (direction: -1 | 1) => {
     spinAudio.prepare()
-    onSelect((selectedIndex + distance + market.positions.length) % market.positions.length)
+    setCycleRequest((current) => ({ id: current.id + 1, direction }))
   }
   return (
     <section
@@ -188,7 +203,9 @@ function StageArtifact({
         <div className="arena-market">
           <span>
             {stage === "configure"
-              ? `${market.positions.length} featured · ${market.activePositions} live · ${market.asset}`
+              ? `${market.positions.length} featured · ${market.activePositions} live · ${
+                  isAllPools ? `${poolOptions.length - 1} pools` : market.asset
+                }`
               : stage === "drawing"
                 ? "Verifiable draw"
                 : "Your pull"}
@@ -196,7 +213,7 @@ function StageArtifact({
           <strong>
             {stage === "configure" ? (
               <>
-                <Crown /> {selectedPosition?.name}
+                <Crown /> {inspected ? selectedPosition?.name : "Face-down card"}
               </>
             ) : stage === "drawing" ? (
               <>
@@ -210,27 +227,30 @@ function StageArtifact({
           </strong>
         </div>
         <div
-          aria-label={`${market.name} circular position selector. Use left and right arrow keys to spin.`}
+          aria-label={`${market.name} card deck. Drag the top card left or right to peek, then release it to move that card to the back. Use either arrow key for the same action.`}
           className="artifact-canvas"
           onKeyDown={(event) => {
             if (stage !== "configure") return
             if (event.key === "ArrowLeft") {
               event.preventDefault()
-              selectRelative(-1)
+              cycleCard(-1)
             }
             if (event.key === "ArrowRight") {
               event.preventDefault()
-              selectRelative(1)
+              cycleCard(1)
             }
           }}
+          onPointerDown={(event) => event.currentTarget.focus()}
           role={stage === "configure" ? "group" : undefined}
           tabIndex={stage === "configure" ? 0 : -1}
         >
           <Suspense fallback={<div className="artifact-canvas-fallback" />}>
             <NftCardScene
               activeIndex={activeIndex}
+              cycleRequest={cycleRequest}
               market={market}
               onRevealReady={onRevealReady}
+              onInspectionChange={setInspected}
               onSelect={onSelect}
               revealedPosition={position}
               stage={stage}
@@ -241,8 +261,8 @@ function StageArtifact({
           <>
             <div className="arena-spin-controls">
               <button
-                aria-label="Spin to previous position"
-                onClick={() => selectRelative(-1)}
+                aria-label="Move the top card around the left side to the back"
+                onClick={() => cycleCard(-1)}
                 type="button"
               >
                 <ChevronLeft aria-hidden="true" />
@@ -251,16 +271,22 @@ function StageArtifact({
                 {selectedIndex + 1} / {market.positions.length}
               </span>
               <button
-                aria-label="Spin to next position"
-                onClick={() => selectRelative(1)}
+                aria-label="Move the top card around the right side to the back"
+                onClick={() => cycleCard(1)}
                 type="button"
               >
                 <ChevronRight aria-hidden="true" />
               </button>
             </div>
             <div className="arena-gesture">
-              <span>Drag to spin · tap to select</span>
-              <strong>{selectedPosition?.collection}</strong>
+              <span>{inspected ? "Drag to throw · card returns to bottom" : "Click to flip"}</span>
+              <strong>
+                {inspected
+                  ? [selectedPosition?.sourceMarketName, selectedPosition?.collection]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : "Top card is face-down"}
+              </strong>
             </div>
           </>
         ) : (
@@ -274,16 +300,16 @@ function StageArtifact({
             </p>
             <strong>
               {stage === "drawing"
-                ? "Charging the committed pool…"
+                ? "Shuffling the committed pack…"
                 : stage === "settled"
                   ? "Your receipt is ready"
                   : position?.collection}
             </strong>
             <small>
               {stage === "drawing"
-                ? "A proof will be attached to your pull receipt."
+                ? "Five rapid shuffles before the top card turns over."
                 : stage === "revealed"
-                  ? `${formatValue(position?.backing ?? 0, market.asset)} backing`
+                  ? `${formatValue(position?.backing ?? 0, position?.asset ?? market.asset)} backing`
                   : "Pull again whenever you are ready."}
             </small>
           </div>
@@ -307,10 +333,13 @@ function PullCommand({
   onSettle,
   onReset,
 }: PullExperienceProps & { position?: Position }) {
+  const isAllPools = market.id === ALL_POOLS_ID
   const { address, isConnected } = useAccount()
   const { writeContract, isPending } = useWriteContract()
   const [error, setError] = useState<string | null>(null)
   const [livePending, setLivePending] = useState(false)
+  const [previewRevealReady, setPreviewRevealReady] = useState(false)
+  const previewRevealTimer = useRef<number | null>(null)
   const settlementTotal = market.pullPrice * count
   const paymentTotal =
     paymentAsset === market.asset
@@ -318,19 +347,41 @@ function PullCommand({
       : paymentAsset === "ETH"
         ? settlementTotal / 3500
         : settlementTotal * 3500
-  const route = getPullRouteConfig(market.id, paymentAsset, market.asset)
+  const route = isAllPools ? undefined : getPullRouteConfig(market.id, paymentAsset, market.asset)
   const canSubmit = Boolean(isConnected && address && route?.nativeInput)
   const resetLocally = () => {
+    if (previewRevealTimer.current !== null) window.clearTimeout(previewRevealTimer.current)
     setLivePending(false)
     onReset()
   }
+  const revealPreviewNow = () => {
+    if (previewRevealTimer.current !== null) window.clearTimeout(previewRevealTimer.current)
+    previewRevealTimer.current = null
+    onReveal()
+  }
+
+  useEffect(() => {
+    if (stage !== "drawing" || livePending) {
+      setPreviewRevealReady(false)
+      return undefined
+    }
+    const readyTimer = window.setTimeout(() => setPreviewRevealReady(true), 1400)
+    return () => window.clearTimeout(readyTimer)
+  }, [livePending, stage])
+
+  useEffect(
+    () => () => {
+      if (previewRevealTimer.current !== null) window.clearTimeout(previewRevealTimer.current)
+    },
+    [],
+  )
   const requestPull = () => {
     spinAudio.prepare()
     if (!canSubmit || !route || !address || !drawRouterAddress) {
       setLivePending(false)
       spinAudio.start()
       onStage("drawing")
-      window.setTimeout(onReveal, 1650)
+      previewRevealTimer.current = window.setTimeout(revealPreviewNow, 1700)
       return
     }
     setError(null)
@@ -374,7 +425,7 @@ function PullCommand({
       <aside aria-live="polite" className="pull-command command-state">
         <Dices />
         <p>{livePending ? "Pull order submitted" : "Randomness requested"}</p>
-        <h2>{livePending ? "Waiting for epoch result…" : "Finding your position…"}</h2>
+        <h2>{livePending ? "Waiting for epoch result…" : "Shuffling your pack…"}</h2>
         <small>
           {livePending ? (
             "The verified result will appear once the epoch and indexer confirm it."
@@ -384,8 +435,8 @@ function PullCommand({
             </>
           )}
         </small>
-        {!livePending ? (
-          <button onClick={onReveal} type="button">
+        {!livePending && previewRevealReady ? (
+          <button onClick={revealPreviewNow} type="button">
             Reveal now <ChevronDown />
           </button>
         ) : null}
@@ -399,7 +450,7 @@ function PullCommand({
             <p>Choose settlement</p>
             <h2 id="settlement-heading">{position.name}</h2>
           </div>
-          <span className="asset-chip">24h</span>
+          <span className="asset-chip">{position.asset ?? market.asset}</span>
         </div>
         <p className="settlement-intro">
           Your position is revealed. Choose an exit or put it back to work.
@@ -435,12 +486,22 @@ function PullCommand({
           <p>Your pull</p>
           <h2>{market.name}</h2>
         </div>
-        <span className="asset-chip">{market.asset}</span>
+        <span className="asset-chip">
+          {isAllPools ? `${poolOptions.length - 1} pools` : market.asset}
+        </span>
       </div>
       <div className="command-price">
-        <span>Current pull price</span>
-        <strong>{formatValue(settlementTotal, market.asset)}</strong>
-        <small>Expected value + 10% markup</small>
+        <span>{isAllPools ? "Eligible inventory" : "Current pull price"}</span>
+        <strong>
+          {isAllPools
+            ? `${market.activePositions.toLocaleString()} live cards`
+            : formatValue(settlementTotal, market.asset)}
+        </strong>
+        <small>
+          {isAllPools
+            ? `One random result across ${poolOptions.length - 1} active pools`
+            : "Expected value + 10% markup"}
+        </small>
       </div>
       <div className="count-control">
         <span>Quantity</span>
@@ -464,25 +525,33 @@ function PullCommand({
           </button>
         </div>
       </div>
-      <fieldset className="asset-switch">
-        <legend>Pay with</legend>
-        {(["ETH", "USDG"] as const).map((asset) => (
-          <button
-            aria-pressed={paymentAsset === asset}
-            className={paymentAsset === asset ? "is-active" : ""}
-            key={asset}
-            onClick={() => onPaymentAsset(asset)}
-            type="button"
-          >
-            {asset}
-            {asset !== market.asset ? <small>routed</small> : null}
-          </button>
-        ))}
-      </fieldset>
+      {!isAllPools ? (
+        <fieldset className="asset-switch">
+          <legend>Pay with</legend>
+          {(["ETH", "USDG"] as const).map((asset) => (
+            <button
+              aria-pressed={paymentAsset === asset}
+              className={paymentAsset === asset ? "is-active" : ""}
+              key={asset}
+              onClick={() => onPaymentAsset(asset)}
+              type="button"
+            >
+              {asset}
+              {asset !== market.asset ? <small>routed</small> : null}
+            </button>
+          ))}
+        </fieldset>
+      ) : null}
       <div className="command-total">
-        <span>Max spend</span>
-        <strong>{formatValue(paymentTotal * 1.005, paymentAsset)}</strong>
-        <small>0.5% slippage protection · unused funds return</small>
+        <span>{isAllPools ? "Pool scope" : "Max spend"}</span>
+        <strong>
+          {isAllPools ? "Any active pool" : formatValue(paymentTotal * 1.005, paymentAsset)}
+        </strong>
+        <small>
+          {isAllPools
+            ? "Preview draw · settlement asset follows the revealed card"
+            : "0.5% slippage protection · unused funds return"}
+        </small>
       </div>
       {error ? (
         <p className="command-error" id="pull-error" role="alert">
@@ -504,9 +573,11 @@ function PullCommand({
         <ShieldCheck />{" "}
         {canSubmit
           ? "Ready to submit protected order"
-          : paymentAsset === "USDG"
-            ? "Preview mode · USDG approval flow is not enabled yet"
-            : "Preview mode · configure route to transact"}
+          : isAllPools
+            ? "Preview mode · aggregate orders require a multi-market router"
+            : paymentAsset === "USDG"
+              ? "Preview mode · USDG approval flow is not enabled yet"
+              : "Preview mode · configure route to transact"}
       </p>
     </aside>
   )

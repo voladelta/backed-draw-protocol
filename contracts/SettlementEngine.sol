@@ -17,6 +17,9 @@ contract SettlementEngine is ReentrancyGuard {
     error DecisionWindowActive();
     error InvalidBacking(uint256 backing);
     error NothingToClaim();
+    error NotNFTClaimOwner();
+    error InvalidNFTClaimReceiver();
+    error NFTClaimAlreadyExists();
     error SolvencyInvariantBroken(uint256 assets, uint256 liabilities);
 
     uint256 public constant BPS = 10_000;
@@ -51,6 +54,7 @@ contract SettlementEngine is ReentrancyGuard {
     mapping(uint256 receiptId => SelectedPosition position) public selectedPositions;
     mapping(uint256 receiptId => address referrer) public receiptReferrer;
     mapping(address referrer => uint256 amount) public referralClaims;
+    mapping(address collection => mapping(uint256 tokenId => address owner)) public pendingNFTClaims;
 
     uint256 public selectedBackingLiability;
     uint256 public earningsLiability;
@@ -65,6 +69,12 @@ contract SettlementEngine is ReentrancyGuard {
     );
     event ReceiptSettled(
         uint256 indexed receiptId, uint256 indexed positionId, ProtocolTypes.SettlementChoice choice
+    );
+    event NFTDeliveryDeferred(
+        address indexed collection, uint256 indexed tokenId, address indexed claimOwner
+    );
+    event NFTClaimed(
+        address indexed collection, uint256 indexed tokenId, address indexed claimOwner, address receiver
     );
 
     constructor(
@@ -169,7 +179,7 @@ contract SettlementEngine is ReentrancyGuard {
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
         _consumeEarnings(position);
         vault.releaseSettlement(msg.sender, buyerPayout);
-        vault.releaseNFT(position.previousOwner, position.collection, position.tokenId);
+        _deliverOrDeferNFT(position.previousOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
 
@@ -185,7 +195,7 @@ contract SettlementEngine is ReentrancyGuard {
         _consumeEarnings(position);
         vault.releaseSettlement(address(rewardController), rewardAmount);
         rewardController.enqueue(msg.sender, settlementAsset, rewardAmount);
-        vault.releaseNFT(position.previousOwner, position.collection, position.tokenId);
+        _deliverOrDeferNFT(position.previousOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
 
@@ -248,6 +258,14 @@ contract SettlementEngine is ReentrancyGuard {
         _assertSolvent();
     }
 
+    function claimNFT(address collection, uint256 tokenId, address receiver) external nonReentrant {
+        if (pendingNFTClaims[collection][tokenId] != msg.sender) revert NotNFTClaimOwner();
+        if (receiver == address(0)) revert InvalidNFTClaimReceiver();
+        delete pendingNFTClaims[collection][tokenId];
+        vault.releaseNFT(receiver, collection, tokenId);
+        emit NFTClaimed(collection, tokenId, msg.sender, receiver);
+    }
+
     function totalLiabilities() public view returns (uint256) {
         return selectedBackingLiability + earningsLiability + rewardInputLiability + referralLiability
             + securityLiability + buybackLiability + protocolLiability;
@@ -265,8 +283,15 @@ contract SettlementEngine is ReentrancyGuard {
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
         _consumeEarnings(position);
         vault.releaseSettlement(position.previousOwner, ownerPayout);
-        vault.releaseNFT(receiptOwner, position.collection, position.tokenId);
+        _deliverOrDeferNFT(receiptOwner, position.collection, position.tokenId);
         _assertSolvent();
+    }
+
+    function _deliverOrDeferNFT(address recipient, address collection, uint256 tokenId) private {
+        if (vault.tryReleaseNFT(recipient, collection, tokenId)) return;
+        if (pendingNFTClaims[collection][tokenId] != address(0)) revert NFTClaimAlreadyExists();
+        pendingNFTClaims[collection][tokenId] = recipient;
+        emit NFTDeliveryDeferred(collection, tokenId, recipient);
     }
 
     function _consumeEarnings(SelectedPosition memory position) private {

@@ -19,6 +19,11 @@ contract MarketVault is IERC721Receiver {
     address public settlementEngine;
     address public epochCoordinator;
 
+    address private _expectedCollection;
+    address private _expectedFrom;
+    uint256 private _expectedTokenId;
+    bool private _acceptingDeposit;
+
     constructor(address market_, address settlementAsset_) {
         market = market_;
         settlementAsset = IERC20(settlementAsset_);
@@ -50,7 +55,15 @@ contract MarketVault is IERC721Receiver {
     }
 
     function depositNFT(address from, address collection, uint256 tokenId) external onlyMarket {
+        _expectedCollection = collection;
+        _expectedFrom = from;
+        _expectedTokenId = tokenId;
+        _acceptingDeposit = true;
         IERC721(collection).safeTransferFrom(from, address(this), tokenId);
+        _acceptingDeposit = false;
+        delete _expectedCollection;
+        delete _expectedFrom;
+        delete _expectedTokenId;
         if (IERC721(collection).ownerOf(tokenId) != address(this)) revert UnexpectedNFT(collection, tokenId);
     }
 
@@ -58,7 +71,25 @@ contract MarketVault is IERC721Receiver {
         IERC721(collection).safeTransferFrom(address(this), to, tokenId);
     }
 
-    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+    function tryReleaseNFT(address to, address collection, uint256 tokenId)
+        external
+        onlyMarket
+        returns (bool delivered)
+    {
+        try IERC721(collection).safeTransferFrom(address(this), to, tokenId) {
+            delivered = true;
+        } catch { }
+    }
+
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata)
+        external
+        view
+        returns (bytes4)
+    {
+        if (
+            !_acceptingDeposit || operator != address(this) || msg.sender != _expectedCollection
+                || from != _expectedFrom || tokenId != _expectedTokenId
+        ) revert UnexpectedNFT(msg.sender, tokenId);
         return IERC721Receiver.onERC721Received.selector;
     }
 }

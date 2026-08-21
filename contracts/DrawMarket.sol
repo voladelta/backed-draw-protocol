@@ -29,6 +29,15 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     error MarketCapacityReached();
     error IntakePaused();
     error NothingToClaim();
+    error EpochBoundaryPending();
+
+    struct WithdrawalClaim {
+        address owner;
+        address earningsRecipient;
+        uint256 backing;
+        uint256 cashEarnings;
+        uint256 rewardInput;
+    }
 
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
@@ -40,6 +49,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     uint256 public constant CROWN_REMAINDER_BPS = 500;
     uint256 public constant PROTOCOL_REMAINDER_BPS = 100;
     uint256 public constant CROWN_CHALLENGE_BPS = 11_000;
+    uint32 public constant MAX_BOUNDARY_BATCH = 64;
 
     uint256 public marketId;
     bytes32 public collectionSetId;
@@ -70,6 +80,14 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     mapping(uint32 slot => uint256 positionId) public positionAtSlot;
     mapping(address collection => bool enabled) public collectionEnabled;
     mapping(address account => uint256 amount) public settlementClaims;
+    mapping(uint256 positionId => WithdrawalClaim claim) public withdrawalClaims;
+
+    uint256[] private _withdrawalQueue;
+    uint256[] private _backingChangeQueue;
+    uint256[] private _activationQueue;
+    uint256 private _withdrawalCursor;
+    uint256 private _backingChangeCursor;
+    uint256 private _activationCursor;
 
     uint32[] private _freeSlots;
     uint32 private _nextSlot;
@@ -92,6 +110,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
     bool public depositsPaused;
     bool public epochLocked;
+    bool public boundaryActive;
     bool private _initialized;
 
     event CollectionStatusUpdated(address indexed collection, bool enabled);
@@ -106,6 +125,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     );
     event PositionActivated(uint256 indexed positionId, uint32 treeSlot, uint256 weight);
     event PositionWithdrawalQueued(uint256 indexed positionId);
+    event PositionWithdrawalClaimable(uint256 indexed positionId, address indexed owner);
     event PositionWithdrawn(
         uint256 indexed positionId,
         address indexed owner,
@@ -123,6 +143,14 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         uint256 backing
     );
     event CrownChanged(uint256 indexed previousPositionId, uint256 indexed newPositionId, uint256 paidPot);
+    event EpochBoundaryStarted(uint256 withdrawals, uint256 backingChanges, uint256 activations);
+    event EpochBoundaryAdvanced(
+        uint32 processed,
+        uint256 withdrawalRemaining,
+        uint256 backingChangeRemaining,
+        uint256 activationRemaining
+    );
+    event EpochBoundaryCompleted();
 
     constructor() {
         _initialized = true;
@@ -214,6 +242,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         returns (uint256 positionId)
     {
         if (depositsPaused) revert IntakePaused();
+        if (boundaryActive) revert EpochBoundaryPending();
         if (!collectionEnabled[collection]) revert CollectionNotEnabled(collection);
         if (!_canDeposit(msg.sender)) revert Ineligible(msg.sender);
         _validateBacking(backing);
@@ -231,8 +260,12 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         vault.depositNFT(msg.sender, collection, tokenId);
         positionToken.mint(msg.sender, positionId);
 
-        if (_treeLocked()) position.status = ProtocolTypes.PositionStatus.Staged;
-        else _activate(positionId, position);
+        if (_treeLocked()) {
+            position.status = ProtocolTypes.PositionStatus.Staged;
+            _activationQueue.push(positionId);
+        } else {
+            _activate(positionId, position);
+        }
         emit PositionDeposited(positionId, msg.sender, collection, tokenId, backing, position.status);
         _assertSolvent();
     }
@@ -253,6 +286,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
             _withdraw(positionId, position, msg.sender);
         } else if (position.status == ProtocolTypes.PositionStatus.Active && _treeLocked()) {
             position.status = ProtocolTypes.PositionStatus.WithdrawalQueued;
+            _withdrawalQueue.push(positionId);
             emit PositionWithdrawalQueued(positionId);
         } else if (position.status == ProtocolTypes.PositionStatus.Active) {
             _withdraw(positionId, position, msg.sender);
@@ -280,9 +314,11 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (_treeLocked()) {
             position.pendingBacking = newBacking;
             position.status = ProtocolTypes.PositionStatus.BackingChangeQueued;
+            _backingChangeQueue.push(positionId);
             emit BackingChangeQueued(positionId, oldBacking, newBacking);
         } else {
-            _applyBackingChange(positionId, position, msg.sender, newBacking);
+            uint256 reduction = _applyBackingChange(positionId, position, newBacking);
+            if (reduction != 0) vault.releaseSettlement(msg.sender, reduction);
         }
         _assertSolvent();
     }
@@ -319,6 +355,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         address earningsRecipient
     ) external nonReentrant returns (uint256 positionId) {
         if (msg.sender != address(settlementEngine)) revert Ineligible(msg.sender);
+        if (boundaryActive) revert EpochBoundaryPending();
         _validateBacking(backing);
         positionId = nextPositionId++;
         ProtocolTypes.Position storage position = positions[positionId];
@@ -329,8 +366,12 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         backingLiability += backing;
         vault.depositSettlement(payer, backing);
         positionToken.mint(owner, positionId);
-        if (_treeLocked()) position.status = ProtocolTypes.PositionStatus.Staged;
-        else _activate(positionId, position);
+        if (_treeLocked()) {
+            position.status = ProtocolTypes.PositionStatus.Staged;
+            _activationQueue.push(positionId);
+        } else {
+            _activate(positionId, position);
+        }
         emit PositionDeposited(positionId, owner, collection, tokenId, backing, position.status);
         _assertSolvent();
     }
@@ -341,7 +382,33 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (position.status != ProtocolTypes.PositionStatus.BackingChangeQueued) {
             revert InvalidPositionState(positionId, position.status);
         }
-        _applyBackingChange(positionId, position, positionToken.ownerOf(positionId), position.pendingBacking);
+        address owner = positionToken.ownerOf(positionId);
+        uint256 reduction = _applyBackingChange(positionId, position, position.pendingBacking);
+        if (reduction != 0) vault.releaseSettlement(owner, reduction);
+        _assertSolvent();
+    }
+
+    function claimWithdrawal(uint256 positionId, address nftReceiver) external nonReentrant {
+        WithdrawalClaim memory claim = withdrawalClaims[positionId];
+        if (claim.owner != msg.sender) revert Ineligible(msg.sender);
+        if (nftReceiver == address(0)) revert ZeroAddress();
+
+        delete withdrawalClaims[positionId];
+        positions[positionId].status = ProtocolTypes.PositionStatus.Withdrawn;
+        backingLiability -= claim.backing;
+        earningsLiability -= claim.cashEarnings;
+        rewardInputLiability -= claim.rewardInput;
+        vault.releaseSettlement(claim.owner, claim.backing);
+        if (claim.cashEarnings != 0) {
+            vault.releaseSettlement(claim.earningsRecipient, claim.cashEarnings);
+        }
+        if (claim.rewardInput != 0) {
+            vault.releaseSettlement(address(rewardController), claim.rewardInput);
+            rewardController.enqueue(claim.earningsRecipient, settlementAsset, claim.rewardInput);
+        }
+        ProtocolTypes.Position storage position = positions[positionId];
+        vault.releaseNFT(nftReceiver, position.collection, position.tokenId);
+        emit PositionWithdrawn(positionId, claim.owner, claim.backing, claim.cashEarnings, claim.rewardInput);
         _assertSolvent();
     }
 
@@ -358,7 +425,10 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function lockEpoch() external returns (uint32 count, uint256 weight, bytes32 root) {
-        if (msg.sender != address(epochCoordinator) || epochLocked || activePositionCount == 0) {
+        if (
+            msg.sender != address(epochCoordinator) || epochLocked || boundaryActive || _hasBoundaryWork()
+                || activePositionCount == 0
+        ) {
             revert InvalidConfiguration();
         }
         epochLocked = true;
@@ -368,6 +438,86 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     function unlockEpoch() external {
         if (msg.sender != address(epochCoordinator) || !epochLocked) revert InvalidConfiguration();
         epochLocked = false;
+        boundaryActive = _hasBoundaryWork();
+        emit EpochBoundaryStarted(
+            _withdrawalQueue.length - _withdrawalCursor,
+            _backingChangeQueue.length - _backingChangeCursor,
+            _activationQueue.length - _activationCursor
+        );
+        if (!boundaryActive) emit EpochBoundaryCompleted();
+    }
+
+    function epochBoundaryPending() external view returns (bool) {
+        return boundaryActive;
+    }
+
+    function epochBoundaryState()
+        external
+        view
+        returns (uint256 withdrawalRemaining, uint256 backingChangeRemaining, uint256 activationRemaining)
+    {
+        withdrawalRemaining = _withdrawalQueue.length - _withdrawalCursor;
+        backingChangeRemaining = _backingChangeQueue.length - _backingChangeCursor;
+        activationRemaining = _activationQueue.length - _activationCursor;
+    }
+
+    function processEpochBoundary(uint32 maxPositions)
+        external
+        nonReentrant
+        returns (uint32 processed, bool complete)
+    {
+        if (
+            msg.sender != address(epochCoordinator) || epochLocked || maxPositions == 0
+                || maxPositions > MAX_BOUNDARY_BATCH
+        ) {
+            revert InvalidConfiguration();
+        }
+
+        while (processed < maxPositions && _withdrawalCursor < _withdrawalQueue.length) {
+            uint256 positionId = _withdrawalQueue[_withdrawalCursor++];
+            ProtocolTypes.Position storage position = positions[positionId];
+            if (position.status == ProtocolTypes.PositionStatus.WithdrawalQueued) {
+                _prepareWithdrawal(positionId, position);
+            }
+            processed++;
+        }
+        while (processed < maxPositions && _backingChangeCursor < _backingChangeQueue.length) {
+            uint256 positionId = _backingChangeQueue[_backingChangeCursor++];
+            ProtocolTypes.Position storage position = positions[positionId];
+            if (position.status == ProtocolTypes.PositionStatus.BackingChangeQueued) {
+                address owner = positionToken.ownerOf(positionId);
+                uint256 reduction = _applyBackingChange(positionId, position, position.pendingBacking);
+                if (reduction != 0) {
+                    settlementClaims[owner] += reduction;
+                    settlementClaimLiability += reduction;
+                }
+            }
+            processed++;
+        }
+        while (processed < maxPositions && _activationCursor < _activationQueue.length) {
+            uint256 positionId = _activationQueue[_activationCursor++];
+            ProtocolTypes.Position storage position = positions[positionId];
+            if (
+                position.status == ProtocolTypes.PositionStatus.Staged
+                    && activePositionCount < maxActivePositions
+            ) {
+                _activate(positionId, position);
+            }
+            processed++;
+        }
+
+        complete = !_hasBoundaryWork();
+        if (complete) {
+            boundaryActive = false;
+            emit EpochBoundaryCompleted();
+        }
+        emit EpochBoundaryAdvanced(
+            processed,
+            _withdrawalQueue.length - _withdrawalCursor,
+            _backingChangeQueue.length - _backingChangeCursor,
+            _activationQueue.length - _activationCursor
+        );
+        _assertSolvent();
     }
 
     function resolveDraw(
@@ -602,9 +752,8 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     function _applyBackingChange(
         uint256 positionId,
         ProtocolTypes.Position storage position,
-        address owner,
         uint128 newBacking
-    ) private {
+    ) private returns (uint256 reduction) {
         uint256 oldBacking = position.backing;
         uint32 slot = position.treeSlot;
         position.backing = newBacking;
@@ -614,9 +763,8 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         _tree.set(slot, newWeight, _leafCommitment(positionId, slot, newWeight));
         activeSetCommitment = _tree.root();
         if (newBacking < oldBacking) {
-            uint256 reduction = oldBacking - newBacking;
+            reduction = oldBacking - newBacking;
             backingLiability -= reduction;
-            vault.releaseSettlement(owner, reduction);
         }
         _considerCrown(positionId, newBacking);
         emit BackingChanged(positionId, oldBacking, newBacking);
@@ -683,6 +831,32 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
     function _treeLocked() private view returns (bool) {
         return epochLocked;
+    }
+
+    function _hasBoundaryWork() private view returns (bool) {
+        return _withdrawalCursor < _withdrawalQueue.length
+            || _backingChangeCursor < _backingChangeQueue.length
+            || _activationCursor < _activationQueue.length;
+    }
+
+    function _prepareWithdrawal(uint256 positionId, ProtocolTypes.Position storage position) private {
+        address owner = positionToken.ownerOf(positionId);
+        (uint256 cash, uint256 rewardInput) = _pendingEarnings(position);
+        _removeFromTree(position);
+        if (crownPositionId == positionId) _releaseCrown(positionId, 0);
+        uint256 backing = position.backing;
+        if (position.pendingBacking > backing) backing = position.pendingBacking;
+        position.pendingBacking = 0;
+        position.status = ProtocolTypes.PositionStatus.WithdrawalClaimable;
+        withdrawalClaims[positionId] = WithdrawalClaim({
+            owner: owner,
+            earningsRecipient: position.earningsRecipient,
+            backing: backing,
+            cashEarnings: cash,
+            rewardInput: rewardInput
+        });
+        positionToken.burn(positionId);
+        emit PositionWithdrawalClaimable(positionId, owner);
     }
 
     function _isTreeMember(ProtocolTypes.PositionStatus status) private pure returns (bool) {

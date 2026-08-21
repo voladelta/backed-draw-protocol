@@ -23,6 +23,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     error IntakePaused();
     error RandomnessNotTimedOut();
     error NothingToClaim();
+    error EpochBoundaryPending();
 
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
@@ -78,6 +79,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     );
     event EpochFinalized(uint256 indexed epochId, uint32 resolvedDraws);
     event EpochCancelled(uint256 indexed epochId);
+    event EpochBoundaryAdvanced(uint256 indexed epochId, uint32 processed, bool complete);
     event PullsPaused(bool paused);
 
     constructor(
@@ -223,9 +225,9 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
             }
         }
         if (epoch.orderCursor == epochOrders.length) {
-            epoch.status = ProtocolTypes.EpochStatus.Finalized;
+            epoch.status = ProtocolTypes.EpochStatus.Finalizing;
             market.unlockEpoch();
-            emit EpochFinalized(epoch.id, epoch.totalResolved);
+            _completeBoundaryIfReady();
         }
     }
 
@@ -244,10 +246,21 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
             processed++;
         }
         if (epoch.orderCursor == epochOrders.length) {
-            epoch.status = ProtocolTypes.EpochStatus.Cancelled;
+            epoch.status = ProtocolTypes.EpochStatus.Cancelling;
             market.unlockEpoch();
-            emit EpochCancelled(epoch.id);
+            _completeBoundaryIfReady();
         }
+    }
+
+    function advanceEpochBoundary(uint32 maxPositions) external nonReentrant {
+        ProtocolTypes.EpochStatus status = epoch.status;
+        if (status != ProtocolTypes.EpochStatus.Finalizing && status != ProtocolTypes.EpochStatus.Cancelling)
+        {
+            revert InvalidEpochState(status);
+        }
+        (uint32 processed, bool complete) = market.processEpochBoundary(maxPositions);
+        emit EpochBoundaryAdvanced(epoch.id, processed, complete);
+        if (complete) _finishBoundary(status);
     }
 
     function claimRefund() external nonReentrant {
@@ -275,6 +288,10 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         returns (uint256 orderIndex)
     {
         if (pullsPaused) revert IntakePaused();
+        if (
+            epoch.status == ProtocolTypes.EpochStatus.Finalizing
+                || epoch.status == ProtocolTypes.EpochStatus.Cancelling || market.epochBoundaryPending()
+        ) revert EpochBoundaryPending();
         if (!market.canPullUser(buyer)) revert Ineligible(buyer);
         if (input.deadline < block.timestamp) revert DeadlineExpired();
         if (input.drawCount == 0 || input.drawCount > maxDrawsPerEpoch) revert BatchTooLarge();
@@ -340,11 +357,26 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         }
     }
 
+    function _completeBoundaryIfReady() private {
+        if (!market.epochBoundaryPending()) _finishBoundary(epoch.status);
+    }
+
+    function _finishBoundary(ProtocolTypes.EpochStatus boundaryStatus) private {
+        if (boundaryStatus == ProtocolTypes.EpochStatus.Finalizing) {
+            epoch.status = ProtocolTypes.EpochStatus.Finalized;
+            emit EpochFinalized(epoch.id, epoch.totalResolved);
+        } else {
+            epoch.status = ProtocolTypes.EpochStatus.Cancelled;
+            emit EpochCancelled(epoch.id);
+        }
+    }
+
     function _inFlight() private view returns (bool) {
         ProtocolTypes.EpochStatus status = epoch.status;
         return status == ProtocolTypes.EpochStatus.Collecting
             || status == ProtocolTypes.EpochStatus.RandomnessRequested
             || status == ProtocolTypes.EpochStatus.RandomnessReady
-            || status == ProtocolTypes.EpochStatus.Resolving;
+            || status == ProtocolTypes.EpochStatus.Resolving || status == ProtocolTypes.EpochStatus.Finalizing
+            || status == ProtocolTypes.EpochStatus.Cancelling;
     }
 }

@@ -208,7 +208,7 @@ contract EpochBoundaryTest is Test {
         coordinator.advanceEpochBoundary(2);
 
         assertEq(market.activePositionCount(), 3);
-        assertEq(market.crownPositionId(), 4);
+        assertEq(market.crownPositionId(), 2);
     }
 
     function testBoundaryReassignsCrownWhenNoLaterMutationDoes() external {
@@ -220,7 +220,23 @@ contract EpochBoundaryTest is Test {
         coordinator.advanceEpochBoundary(1);
 
         assertEq(market.activePositionCount(), 2);
-        assertEq(market.crownPositionId(), 1);
+        assertEq(market.crownPositionId(), 2);
+    }
+
+    function testQueuedCrownWithdrawalReassignsBeforeBoundaryCompletes() external {
+        _startEpoch();
+        vm.prank(carol);
+        market.requestWithdrawal(3);
+        vm.prank(alice);
+        market.requestWithdrawal(1);
+
+        coordinator.requestRandomness();
+        vm.warp(block.timestamp + 1 hours + 1);
+        coordinator.cancelTimedOutEpoch(1);
+        coordinator.advanceEpochBoundary(1);
+
+        assertTrue(market.epochBoundaryPending());
+        assertEq(market.crownPositionId(), 2);
     }
 
     function testQueuedBackingChangeAppliedBeforeNextSnapshot() external {

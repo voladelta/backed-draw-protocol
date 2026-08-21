@@ -12,6 +12,7 @@ contract MarketVault is IERC721Receiver {
     error OnlyMarket();
     error UnsupportedTokenBehavior(uint256 expected, uint256 received);
     error UnexpectedNFT(address collection, uint256 tokenId);
+    error NFTDeliveryFailed(address collection, uint256 tokenId, address expectedOwner, address actualOwner);
     error OperatorsAlreadySet();
 
     address public immutable market;
@@ -69,6 +70,8 @@ contract MarketVault is IERC721Receiver {
 
     function releaseNFT(address to, address collection, uint256 tokenId) external onlyMarket {
         IERC721(collection).safeTransferFrom(address(this), to, tokenId);
+        address owner = IERC721(collection).ownerOf(tokenId);
+        if (owner != to) revert NFTDeliveryFailed(collection, tokenId, to, owner);
     }
 
     function tryReleaseNFT(address to, address collection, uint256 tokenId)
@@ -77,7 +80,9 @@ contract MarketVault is IERC721Receiver {
         returns (bool delivered)
     {
         try IERC721(collection).safeTransferFrom(address(this), to, tokenId) {
-            delivered = true;
+            address owner = IERC721(collection).ownerOf(tokenId);
+            if (owner == to) return true;
+            if (owner != address(this)) revert NFTDeliveryFailed(collection, tokenId, to, owner);
         } catch { }
     }
 

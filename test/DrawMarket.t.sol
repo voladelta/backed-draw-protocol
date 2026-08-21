@@ -136,7 +136,6 @@ contract DrawMarketTest is Test {
     }
 
     function testPullIncludesSelectedPositionEarningsAndSettlesKeep() external {
-        uint256 aliceBefore = asset.balanceOf(alice);
         uint256 price = _drawOne(7);
         ProtocolTypes.PullReceiptData memory receipt =
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
@@ -160,7 +159,7 @@ contract DrawMarketTest is Test {
         vm.expectRevert();
         positionToken.ownerOf(selectedId);
         assertEq(collection.ownerOf(receipt.positionId), buyer);
-        assertGt(asset.balanceOf(originalOwner), originalOwner == alice ? aliceBefore : 0);
+        assertGt(engine.settlementClaims(originalOwner), 0);
         assertEq(
             uint8(PullReceipt(address(engine.pullReceipt())).receiptData(1).status),
             uint8(ProtocolTypes.PullStatus.Settled)
@@ -173,10 +172,9 @@ contract DrawMarketTest is Test {
         _drawOne(42);
         ProtocolTypes.PullReceiptData memory receipt =
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
-        uint256 buyerBefore = asset.balanceOf(buyer);
         vm.prank(buyer);
         engine.settleCash(1);
-        assertEq(asset.balanceOf(buyer) - buyerBefore, uint256(receipt.selectedBacking) * 8_500 / 10_000);
+        assertEq(engine.settlementClaims(buyer), uint256(receipt.selectedBacking) * 8_500 / 10_000);
         assertGt(engine.securityLiability(), 0);
         assertGt(engine.buybackLiability(), 0);
         assertGt(engine.protocolLiability(), 0);
@@ -189,9 +187,10 @@ contract DrawMarketTest is Test {
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
         (,, address previousOwner,,,,) = engine.selectedPositions(1);
         vm.prank(buyer);
-        engine.settleDraw(1);
+        engine.settleDraw(1, 80 ether, hex"1234");
         uint256 expectedBuyerInput = uint256(receipt.selectedBacking) * 8_500 / 10_000;
-        assertEq(rewards.queued(buyer, address(asset)), expectedBuyerInput);
+        assertEq(rewards.settlementInput(buyer, address(asset)), expectedBuyerInput);
+        assertEq(rewards.lastMinDrawOut(), 80 ether);
         assertEq(collection.ownerOf(receipt.positionId), previousOwner);
         assertTrue(market.solvent());
     }
@@ -208,6 +207,37 @@ contract DrawMarketTest is Test {
         assertEq(collection.ownerOf(receipt.positionId), address(market.vault()));
         assertEq(market.activePositionCount(), 3);
         assertTrue(market.solvent());
+    }
+
+    function testImmediateCrownWithdrawalChoosesDeepestActiveBacking() external {
+        assertEq(market.crownPositionId(), 3);
+
+        vm.prank(carol);
+        market.requestWithdrawal(3);
+
+        assertEq(market.crownPositionId(), 2);
+    }
+
+    function testSelectedCrownIsReassignedBeforeEpochFinishes() external {
+        uint256 price = market.currentPullPrice();
+        _request(price, 2);
+        coordinator.requestRandomness();
+
+        uint256 seed = 1;
+        while (
+            uint256(keccak256(abi.encode(seed, uint256(1), uint32(0), uint32(0)))) % market.totalWeight()
+                < 15_000_000_000_000_000
+        ) {
+            ++seed;
+        }
+        randomness.setSeed(seed);
+        coordinator.provideRandomness("");
+        coordinator.resolveEpoch(1);
+
+        ProtocolTypes.PullReceiptData memory receipt =
+            PullReceipt(address(engine.pullReceipt())).receiptData(1);
+        assertEq(receipt.positionId, 3);
+        assertEq(market.crownPositionId(), 2);
     }
 
     function testForceKeepAfterDecisionWindow() external {
@@ -321,5 +351,202 @@ contract DrawMarketTest is Test {
         randomness.setSeed(seed);
         coordinator.provideRandomness("");
         coordinator.resolveEpoch(1);
+    }
+}
+
+contract DrawMarketCumulativeRoundingTest is Test {
+    MockERC20 internal asset;
+    MockERC721 internal collection;
+    MockRandomnessAdapter internal randomness;
+    MockRewardController internal rewards;
+    DrawMarket internal market;
+    SettlementEngine internal engine;
+    EpochCoordinator internal coordinator;
+
+    address internal governor = makeAddr("governor");
+    address internal alice = makeAddr("alice");
+    address internal bob = makeAddr("bob");
+    address internal carol = makeAddr("carol");
+    address internal buyer = makeAddr("buyer");
+
+    function setUp() external {
+        _deployMarket(1);
+    }
+
+    function testCumulativeRoundingRemainsPayableAcrossDrawAndRelistHistory() external {
+        for (uint256 drawNumber = 1; drawNumber <= 4; ++drawNumber) {
+            _drawNewestPositionAndRelist(drawNumber, 1, 2);
+            assertEq(market.activePositionCount(), 3);
+        }
+
+        (uint256 cash, uint256 rewardInput) = market.pendingPositionEarnings(1);
+        assertEq(cash, 2, "survivor should receive cumulative base and markup shares");
+        assertEq(rewardInput, 0);
+        assertEq(market.earningsLiability(), 6);
+        assertEq(market.securityLiability(), 2);
+
+        uint256 balanceBefore = asset.balanceOf(alice);
+        vm.prank(alice);
+        market.requestWithdrawal(1);
+
+        assertEq(asset.balanceOf(alice) - balanceBefore, 3, "backing and earnings should be payable");
+        vm.prank(bob);
+        market.requestWithdrawal(2);
+        vm.prank(buyer);
+        market.requestWithdrawal(7);
+        assertEq(market.earningsLiability(), 0, "all cash is paid or routed once as dust");
+        assertEq(market.securityLiability(), 4, "only discarded accumulator fractions become dust");
+        assertTrue(market.solvent());
+    }
+
+    function testCumulativeRewardRoundingRemainsPayable() external {
+        _deployMarket(100);
+        for (uint256 drawNumber = 1; drawNumber <= 4; ++drawNumber) {
+            _drawNewestPositionAndRelist(drawNumber, 100, 110);
+        }
+
+        (uint256 cash, uint256 rewardInput) = market.pendingPositionEarnings(1);
+        assertEq(rewardInput, 1, "survivor should receive cumulative reward share");
+        assertGe(market.earningsLiability(), cash);
+        assertGe(market.rewardInputLiability(), rewardInput);
+
+        vm.prank(alice);
+        market.requestWithdrawal(1);
+
+        assertEq(rewards.queued(alice, address(asset)), 1);
+        assertTrue(market.solvent());
+    }
+
+    function _deployMarket(uint128 backing) private {
+        asset = new MockERC20("Unit Asset", "UNIT", 18);
+        collection = new MockERC721();
+        randomness = new MockRandomnessAdapter();
+        rewards = new MockRewardController();
+        ReferralRegistry referrals = new ReferralRegistry(governor);
+        ProtocolRegistry registry = new ProtocolRegistry(governor);
+        ProtocolTypes.MarketConfig memory config = ProtocolTypes.MarketConfig({
+            marketId: 1,
+            collectionSetId: keccak256("ROUNDING"),
+            settlementAsset: address(asset),
+            protocolRegistry: address(registry),
+            governor: governor,
+            guardian: address(0),
+            treasury: makeAddr("treasury"),
+            insuranceReserve: makeAddr("insurance"),
+            buybackReceiver: makeAddr("buyback"),
+            randomnessAdapter: address(randomness),
+            eligibilityPolicy: address(0),
+            referralRegistry: address(referrals),
+            rewardController: address(rewards),
+            trustedRouter: address(0),
+            minBacking: 1,
+            maxBacking: 1_000,
+            maxActivePositions: 4,
+            maxDrawsPerEpoch: 1,
+            collectionWindow: 0,
+            randomnessTimeout: 1 hours,
+            decisionWindow: 24 hours,
+            markupBps: 1_000
+        });
+
+        DrawMarket implementation = new DrawMarket();
+        address marketAddress = Clones.clone(address(implementation));
+        MarketVault vault = new MarketVault(marketAddress, address(asset));
+        PositionNFT positionNft = new PositionNFT("Backed Position", "BKPOS", marketAddress);
+        engine = new SettlementEngine(
+            marketAddress,
+            config.marketId,
+            config.settlementAsset,
+            config.governor,
+            config.treasury,
+            config.insuranceReserve,
+            config.buybackReceiver,
+            address(vault),
+            config.rewardController,
+            config.minBacking,
+            config.maxBacking,
+            config.decisionWindow
+        );
+        coordinator = new EpochCoordinator(
+            config.marketId,
+            marketAddress,
+            address(vault),
+            config.protocolRegistry,
+            config.referralRegistry,
+            config.randomnessAdapter,
+            config.governor,
+            config.guardian,
+            config.trustedRouter,
+            config.maxDrawsPerEpoch,
+            config.collectionWindow,
+            config.randomnessTimeout
+        );
+        address[] memory initialCollections = new address[](1);
+        initialCollections[0] = address(collection);
+        market = DrawMarket(marketAddress);
+        market.initialize(
+            config,
+            address(vault),
+            address(positionNft),
+            address(engine),
+            address(coordinator),
+            initialCollections
+        );
+        bytes32 marketRole = referrals.MARKET_ROLE();
+        vm.prank(governor);
+        referrals.grantRole(marketRole, address(coordinator));
+
+        _deposit(alice, 1, backing);
+        _deposit(bob, 2, backing);
+        _deposit(carol, 3, backing);
+        asset.mint(buyer, 10_000);
+        vm.prank(buyer);
+        asset.approve(address(vault), type(uint256).max);
+    }
+
+    function _drawNewestPositionAndRelist(uint256 drawNumber, uint128 backing, uint256 expectedPrice)
+        private
+    {
+        uint256 price = market.currentPullPrice();
+        assertEq(price, expectedPrice);
+        ProtocolTypes.PullOrderInput memory input = ProtocolTypes.PullOrderInput({
+            receiver: buyer,
+            drawCount: 1,
+            maxUnitPrice: uint128(price),
+            maxTotalPrice: uint128(price),
+            deadline: uint48(block.timestamp + 1 hours),
+            referralCode: bytes32(0)
+        });
+        vm.prank(buyer);
+        coordinator.requestPull(input);
+        coordinator.requestRandomness();
+
+        uint256 weight = market.totalWeight() / 3;
+        uint256 seed = 1;
+        while (
+            uint256(keccak256(abi.encode(seed, drawNumber, uint32(0), uint32(0)))) % market.totalWeight()
+                < weight * 2
+        ) {
+            ++seed;
+        }
+        randomness.setSeed(seed);
+        coordinator.provideRandomness("");
+        coordinator.resolveEpoch(1);
+
+        ProtocolTypes.PullReceiptData memory receipt =
+            PullReceipt(address(engine.pullReceipt())).receiptData(drawNumber);
+        assertEq(receipt.positionId, drawNumber + 2, "newest relist should be selected");
+        vm.prank(buyer);
+        engine.settleRelist(drawNumber, backing);
+    }
+
+    function _deposit(address owner, uint256 tokenId, uint128 backing) private {
+        collection.mint(owner, tokenId);
+        asset.mint(owner, backing);
+        vm.startPrank(owner);
+        collection.approve(address(market.vault()), tokenId);
+        asset.approve(address(market.vault()), backing);
+        market.depositPosition(address(collection), tokenId, backing, owner);
+        vm.stopPrank();
     }
 }

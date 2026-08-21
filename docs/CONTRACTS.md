@@ -12,11 +12,11 @@ OpenZeppelin Contracts is pinned to the audited `v5.7.0` release. Market instanc
 | `MarketFactory`     | Market IDs and fixed-version market deployments                                           |
 | `DrawMarket`        | Positions, backing, weighted tree, per-position accumulators, Crown, deposit state        |
 | `EpochCoordinator`  | Pull escrow, price limits, epoch lock, randomness request, bounded resolution and refunds |
-| `SettlementEngine`  | Selected backing, pull receipts, 24-hour decision state, settlement fee waterfall         |
+| `SettlementEngine`  | Selected backing, pull receipts, decision state, payout claims, settlement fee waterfall  |
 | `MarketVault`       | Isolated custody for one market’s NFT inventory and settlement asset                      |
 | `PositionNFT`       | Transferable ownership of an active or staged position                                    |
 | `PullReceipt`       | Frozen revealed settlement right and historical proof after settlement                    |
-| `RewardController`  | Per-user settlement-asset input waiting for a protected `$DRAW` purchase                  |
+| `RewardController`  | Protected `$DRAW` purchases and per-user queued reward input                              |
 | `ReferralRegistry`  | Permanent wallet attribution and registered referral codes                                |
 | `SwapAndPullRouter` | Exact-output payment conversion, native ETH wrapping, payout conversion and refunds       |
 
@@ -66,6 +66,8 @@ vault balance >=
 ```
 
 Fee-on-transfer settlement assets are rejected through exact balance-delta checks. Selection zeroes the weighted-tree leaf and freezes the `PositionNFT`; settlement burns it before releasing funds or the underlying NFT. The frozen pull receipt remains as the historical settlement proof.
+
+Revealed settlement first converts cash payouts into owner-bound claims held by the `SettlementEngine`. A rejecting or denylisted payout recipient therefore cannot block settlement or `forceKeep`; only the claim owner can retry delivery or redirect it to another receiver. `$DRAW` settlement is different: the receipt owner supplies `minDrawOut` and route data, and the `RewardController` performs the protected swap atomically. If that swap fails, the receipt and all selected-position liabilities remain unconsumed so the owner can retry or select cash.
 
 ## Administration
 

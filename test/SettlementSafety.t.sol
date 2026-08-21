@@ -17,7 +17,7 @@ import { PullReceipt } from "../contracts/tokens/PullReceipt.sol";
 import { MarketVault } from "../contracts/MarketVault.sol";
 import { ProtocolTypes } from "../contracts/types/ProtocolTypes.sol";
 import { IEligibilityPolicy } from "../contracts/interfaces/IEligibilityPolicy.sol";
-import { MockERC20 } from "./mocks/MockERC20.sol";
+import { MockDenylistERC20 } from "./mocks/MockDenylistERC20.sol";
 import { MockERC721 } from "./mocks/MockERC721.sol";
 import { MockRandomnessAdapter } from "./mocks/MockRandomnessAdapter.sol";
 import { MockRewardController } from "./mocks/MockRewardController.sol";
@@ -83,7 +83,7 @@ contract SettlementSafetyEligibilityPolicy is IEligibilityPolicy {
 }
 
 contract SettlementSafetyTest is Test {
-    MockERC20 internal asset;
+    MockDenylistERC20 internal asset;
     MockERC721 internal collection;
     MockRandomnessAdapter internal randomness;
     MockRewardController internal rewards;
@@ -104,7 +104,7 @@ contract SettlementSafetyTest is Test {
     address internal redirectedReceiver = makeAddr("settlement-safety-redirected-receiver");
 
     function setUp() external {
-        asset = new MockERC20("Wrapped Ether", "WETH", 18);
+        asset = new MockDenylistERC20("Wrapped Ether", "WETH", 18);
         collection = new MockERC721();
         randomness = new MockRandomnessAdapter();
         rewards = new MockRewardController();
@@ -156,12 +156,11 @@ contract SettlementSafetyTest is Test {
     function testCashDefersRejectedReturnToPreviousOwner() external {
         SettlementSafetyRejectingReceiver owner = _deployWithRejectingPosition(1);
         _drawOne(buyer, 13);
-        uint256 buyerBefore = asset.balanceOf(buyer);
 
         vm.prank(buyer);
         engine.settleCash(1);
 
-        assertEq(asset.balanceOf(buyer) - buyerBefore, 85 ether);
+        assertEq(engine.settlementClaims(buyer), 85 ether);
         _assertDeferredClaim(owner, 1);
         owner.claimNFT(engine, address(collection), 1, redirectedReceiver);
         assertEq(collection.ownerOf(1), redirectedReceiver);
@@ -172,12 +171,109 @@ contract SettlementSafetyTest is Test {
         _drawOne(buyer, 14);
 
         vm.prank(buyer);
-        engine.settleDraw(1);
+        engine.settleDraw(1, 80 ether, hex"1234");
 
-        assertEq(rewards.queued(buyer, address(asset)), 85 ether);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 85 ether);
+        assertEq(rewards.lastMinDrawOut(), 80 ether);
+        assertEq(rewards.lastRouteData(), hex"1234");
         _assertDeferredClaim(owner, 1);
         owner.claimNFT(engine, address(collection), 1, redirectedReceiver);
         assertEq(collection.ownerOf(1), redirectedReceiver);
+    }
+
+    function testDeniedPayoutRecipientCannotBlockKeepAndCanRedirectClaim() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 141);
+        (,,,,, uint256 cashEarnings,) = engine.selectedPositions(1);
+        asset.setRejectedRecipient(alice, true);
+
+        vm.prank(buyer);
+        engine.settleKeep(1);
+
+        _assertSettledWithClaim(alice, 99 ether + cashEarnings);
+    }
+
+    function testDeniedPayoutRecipientCannotBlockPermissionlessForceKeep() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 142);
+        (,,,,, uint256 cashEarnings,) = engine.selectedPositions(1);
+        asset.setRejectedRecipient(alice, true);
+        vm.warp(_receiptData(1).decisionDeadline + 1);
+
+        vm.prank(governor);
+        engine.forceKeep(1);
+
+        _assertSettledWithClaim(alice, 99 ether + cashEarnings);
+    }
+
+    function testDeniedEarningsRecipientCannotBlockCashSettlement() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 143);
+        (,,,,, uint256 cashEarnings,) = engine.selectedPositions(1);
+        asset.setRejectedRecipient(alice, true);
+
+        vm.prank(buyer);
+        engine.settleCash(1);
+
+        assertEq(engine.settlementClaims(buyer), 85 ether);
+        _assertSettledWithClaim(alice, cashEarnings);
+    }
+
+    function testDeniedEarningsRecipientCannotBlockDrawSettlement() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 144);
+        (,,,,, uint256 cashEarnings,) = engine.selectedPositions(1);
+        asset.setRejectedRecipient(alice, true);
+
+        vm.prank(buyer);
+        engine.settleDraw(1, 84 ether, hex"cafe");
+
+        assertEq(rewards.settlementInput(buyer, address(asset)), 85 ether);
+        _assertSettledWithClaim(alice, cashEarnings);
+    }
+
+    function testDeniedPayoutRecipientCannotBlockRelistSettlement() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 145);
+        (,,,,, uint256 cashEarnings,) = engine.selectedPositions(1);
+        asset.setRejectedRecipient(alice, true);
+
+        vm.prank(buyer);
+        engine.settleRelist(1, 100 ether);
+
+        _assertSettledWithClaim(alice, 99 ether + cashEarnings);
+    }
+
+    function testProtectedDrawSwapFailureLeavesReceiptUnconsumedForCashRetry() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 146);
+        uint256 liabilitiesBefore = engine.totalLiabilities();
+        rewards.setRejectSettlementSwap(true);
+
+        vm.prank(buyer);
+        vm.expectRevert(MockRewardController.SettlementSwapRejected.selector);
+        engine.settleDraw(1, 85 ether, hex"deadbeef");
+
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Revealed));
+        (,,,, uint128 backing,,) = engine.selectedPositions(1);
+        assertEq(backing, 100 ether);
+        assertEq(engine.selectedBackingLiability(), 100 ether);
+        assertEq(engine.totalLiabilities(), liabilitiesBefore);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertEq(collection.ownerOf(1), address(vault));
+
+        rewards.setRejectSettlementSwap(false);
+        vm.prank(buyer);
+        engine.settleCash(1);
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
+        assertEq(engine.settlementClaims(buyer), 85 ether);
     }
 
     function testVaultRejectsUnsolicitedSafeTransferButAcceptsMarketDeposit() external {
@@ -412,5 +508,30 @@ contract SettlementSafetyTest is Test {
         assertEq(collection.ownerOf(tokenId), address(vault));
         assertEq(engine.pendingNFTClaims(address(collection), tokenId), address(owner));
         assertEq(engine.selectedBackingLiability(), 0);
+    }
+
+    function _assertSettledWithClaim(address claimOwner, uint256 expectedClaim) private {
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
+        assertEq(engine.settlementClaims(claimOwner), expectedClaim);
+        uint256 totalClaimsBefore = engine.settlementClaimLiability();
+        assertGe(totalClaimsBefore, expectedClaim);
+        assertEq(engine.selectedBackingLiability(), 0);
+        assertTrue(market.solvent());
+
+        vm.prank(governor);
+        vm.expectRevert(SettlementEngine.NothingToClaim.selector);
+        engine.claimSettlement(redirectedReceiver);
+
+        vm.prank(claimOwner);
+        vm.expectRevert(abi.encodeWithSelector(MockDenylistERC20.RejectedRecipient.selector, claimOwner));
+        engine.claimSettlement(claimOwner);
+        assertEq(engine.settlementClaims(claimOwner), expectedClaim);
+
+        uint256 receiverBefore = asset.balanceOf(redirectedReceiver);
+        vm.prank(claimOwner);
+        engine.claimSettlement(redirectedReceiver);
+        assertEq(asset.balanceOf(redirectedReceiver) - receiverBefore, expectedClaim);
+        assertEq(engine.settlementClaims(claimOwner), 0);
+        assertEq(engine.settlementClaimLiability(), totalClaimsBefore - expectedClaim);
     }
 }

@@ -31,6 +31,9 @@ contract RewardController is AccessControl, ReentrancyGuard {
         uint256 inputAmount,
         uint256 drawAmount
     );
+    event SettlementRewardPurchased(
+        address indexed beneficiary, address indexed inputAsset, uint256 inputAmount, uint256 drawAmount
+    );
     event SwapAdapterUpdated(address indexed adapter);
 
     constructor(address admin, address drawToken_, address swapAdapter_) {
@@ -61,6 +64,28 @@ contract RewardController is AccessControl, ReentrancyGuard {
             revert UnfundedInput(inputAsset, assets, totalQueued[inputAsset]);
         }
         emit RewardEnqueued(beneficiary, inputAsset, inputAmount);
+    }
+
+    function swapSettlement(
+        address beneficiary,
+        address inputAsset,
+        uint256 inputAmount,
+        uint256 minDrawOut,
+        bytes calldata routeData
+    ) external onlyRole(MARKET_ROLE) nonReentrant returns (uint256 drawAmount) {
+        if (inputAmount == 0) revert ZeroAmount();
+        uint256 assets = IERC20(inputAsset).balanceOf(address(this));
+        uint256 requiredAssets = totalQueued[inputAsset] + inputAmount;
+        if (assets < requiredAssets) {
+            revert UnfundedInput(inputAsset, assets, requiredAssets);
+        }
+        IERC20(inputAsset).forceApprove(address(swapAdapter), inputAmount);
+        drawAmount = swapAdapter.swapExactInput(
+            inputAsset, drawToken, inputAmount, minDrawOut, beneficiary, routeData
+        );
+        IERC20(inputAsset).forceApprove(address(swapAdapter), 0);
+        if (drawAmount < minDrawOut) revert SlippageExceeded(drawAmount, minDrawOut);
+        emit SettlementRewardPurchased(beneficiary, inputAsset, inputAmount, drawAmount);
     }
 
     function claim(address inputAsset, uint256 minDrawOut, address receiver, bytes calldata routeData)

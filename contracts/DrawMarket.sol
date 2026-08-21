@@ -76,6 +76,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     IRewardController public rewardController;
 
     WeightedTree.Tree private _tree;
+    mapping(uint256 node => uint256 candidate) private _crownBackingTree;
     mapping(uint256 positionId => ProtocolTypes.Position position) public positions;
     mapping(uint32 slot => uint256 positionId) public positionAtSlot;
     mapping(address collection => bool enabled) public collectionEnabled;
@@ -107,6 +108,9 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     uint256 public crownLiability;
     uint256 public securityLiability;
     uint256 public protocolLiability;
+
+    uint256 private _cashRoundingDust;
+    uint256 private _rewardRoundingDust;
 
     bool public depositsPaused;
     bool public epochLocked;
@@ -650,20 +654,20 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function _accrueCash(uint256 amount, bool base) private {
-        uint256 increment = amount * ACC_PRECISION / activePositionCount;
-        uint256 assigned = increment * activePositionCount / ACC_PRECISION;
+        uint256 scaledAmount = amount * ACC_PRECISION;
+        uint256 increment = scaledAmount / activePositionCount;
         if (base) accBasePerPosition += increment;
         else accMarkupPerPosition += increment;
-        earningsLiability += assigned;
-        securityLiability += amount - assigned;
+        earningsLiability += amount;
+        _recordCashDust(scaledAmount - increment * activePositionCount);
     }
 
     function _accrueReward(uint256 amount) private {
-        uint256 increment = amount * ACC_PRECISION / activePositionCount;
-        uint256 assigned = increment * activePositionCount / ACC_PRECISION;
+        uint256 scaledAmount = amount * ACC_PRECISION;
+        uint256 increment = scaledAmount / activePositionCount;
         accRewardInputPerPosition += increment;
-        rewardInputLiability += assigned;
-        securityLiability += amount - assigned;
+        rewardInputLiability += amount;
+        _recordRewardDust(scaledAmount - increment * activePositionCount);
     }
 
     function _selectPosition(
@@ -675,7 +679,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         uint128 chargedPrice,
         address referrer
     ) private returns (uint256 receiptId) {
-        (uint256 cash, uint256 rewardInput) = _pendingEarnings(position);
+        (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
         address previousOwner = positionToken.ownerOf(positionId);
         _removeFromTree(position);
         backingLiability -= position.backing;
@@ -689,7 +693,10 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
             settlementClaimLiability += unusedAddition;
         }
         position.pendingBacking = 0;
-        if (crownPositionId == positionId) _releaseCrown(positionId, 0);
+        if (crownPositionId == positionId) {
+            _releaseCrown(positionId, 0);
+            _ensureCrown();
+        }
         position.status = ProtocolTypes.PositionStatus.Selected;
         positionToken.setFrozen(positionId, true);
         receiptId = settlementEngine.registerSelection(
@@ -710,9 +717,12 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function _withdraw(uint256 positionId, ProtocolTypes.Position storage position, address owner) private {
+        (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
         if (_isTreeMember(position.status)) _removeFromTree(position);
-        (uint256 cash, uint256 rewardInput) = _pendingEarnings(position);
-        if (crownPositionId == positionId) _releaseCrown(positionId, 0);
+        if (crownPositionId == positionId) {
+            _releaseCrown(positionId, 0);
+            _ensureCrown();
+        }
         uint256 backing = position.backing;
         if (position.pendingBacking > backing) backing += position.pendingBacking - backing;
         position.status = ProtocolTypes.PositionStatus.Withdrawn;
@@ -748,6 +758,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         position.rewardDebt = accRewardInputPerPosition;
         positionAtSlot[slot] = positionId;
         _tree.set(slot, weight, _leafCommitment(positionId, slot, weight));
+        _setCrownCandidate(slot, position.backing);
         activePositionCount++;
         activeSetCommitment = _tree.root();
         _considerCrown(positionId, position.backing);
@@ -757,6 +768,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     function _removeFromTree(ProtocolTypes.Position storage position) private {
         uint32 slot = position.treeSlot;
         _tree.set(slot, 0, bytes32(0));
+        _setCrownCandidate(slot, 0);
         activeSetCommitment = _tree.root();
         positionAtSlot[slot] = 0;
         _freeSlots.push(slot);
@@ -775,6 +787,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         position.status = ProtocolTypes.PositionStatus.Active;
         uint256 newWeight = _weight(newBacking);
         _tree.set(slot, newWeight, _leafCommitment(positionId, slot, newWeight));
+        _setCrownCandidate(slot, newBacking);
         activeSetCommitment = _tree.root();
         if (newBacking < oldBacking) {
             reduction = oldBacking - newBacking;
@@ -819,6 +832,39 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         rewardInput = (accRewardInputPerPosition - position.rewardDebt) / ACC_PRECISION;
     }
 
+    function _crystallizeEarnings(ProtocolTypes.Position storage position)
+        private
+        returns (uint256 cash, uint256 rewardInput)
+    {
+        if (!_isTreeMember(position.status)) return (0, 0);
+        uint256 baseAccrued = accBasePerPosition - position.baseDebt;
+        uint256 markupAccrued = accMarkupPerPosition - position.markupDebt;
+        uint256 rewardAccrued = accRewardInputPerPosition - position.rewardDebt;
+        cash = baseAccrued / ACC_PRECISION + markupAccrued / ACC_PRECISION;
+        rewardInput = rewardAccrued / ACC_PRECISION;
+        _recordCashDust(baseAccrued % ACC_PRECISION + markupAccrued % ACC_PRECISION);
+        _recordRewardDust(rewardAccrued % ACC_PRECISION);
+    }
+
+    function _recordCashDust(uint256 scaledDust) private {
+        // Fractions become security revenue only after retired entitlements sum to a raw asset unit.
+        uint256 totalDust = _cashRoundingDust + scaledDust;
+        uint256 wholeUnits = totalDust / ACC_PRECISION;
+        _cashRoundingDust = totalDust % ACC_PRECISION;
+        if (wholeUnits == 0) return;
+        earningsLiability -= wholeUnits;
+        securityLiability += wholeUnits;
+    }
+
+    function _recordRewardDust(uint256 scaledDust) private {
+        uint256 totalDust = _rewardRoundingDust + scaledDust;
+        uint256 wholeUnits = totalDust / ACC_PRECISION;
+        _rewardRoundingDust = totalDust % ACC_PRECISION;
+        if (wholeUnits == 0) return;
+        rewardInputLiability -= wholeUnits;
+        securityLiability += wholeUnits;
+    }
+
     function _weight(uint256 rawBacking) private view returns (uint256) {
         return Math.mulDiv(WEIGHT_NUMERATOR, 1, rawBacking * normalizationFactor);
     }
@@ -855,17 +901,33 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
     function _ensureCrown() private {
         if (crownPositionId != 0 || activePositionCount == 0) return;
-        uint32 slot = _tree.find(0);
+        uint256 candidate = _crownBackingTree[1];
+        uint32 slot = type(uint32).max - uint32(candidate);
         uint256 positionId = positionAtSlot[slot];
         crownPositionId = positionId;
         emit CrownChanged(0, positionId, 0);
     }
 
+    function _setCrownCandidate(uint32 slot, uint256 backing) private {
+        uint256 node = uint256(_tree.capacity) + slot;
+        // Higher backing wins; reversed slot makes equal-backing succession deterministic.
+        _crownBackingTree[node] = backing == 0 ? 0 : (backing << 32) | (uint256(type(uint32).max) - slot);
+        while (node > 1) {
+            node >>= 1;
+            uint256 leftCandidate = _crownBackingTree[node << 1];
+            uint256 rightCandidate = _crownBackingTree[node << 1 | 1];
+            _crownBackingTree[node] = leftCandidate >= rightCandidate ? leftCandidate : rightCandidate;
+        }
+    }
+
     function _prepareWithdrawal(uint256 positionId, ProtocolTypes.Position storage position) private {
         address owner = positionToken.ownerOf(positionId);
-        (uint256 cash, uint256 rewardInput) = _pendingEarnings(position);
+        (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
         _removeFromTree(position);
-        if (crownPositionId == positionId) _releaseCrown(positionId, 0);
+        if (crownPositionId == positionId) {
+            _releaseCrown(positionId, 0);
+            _ensureCrown();
+        }
         uint256 backing = position.backing;
         if (position.pendingBacking > backing) backing = position.pendingBacking;
         position.pendingBacking = 0;

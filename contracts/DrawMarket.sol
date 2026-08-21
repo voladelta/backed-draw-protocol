@@ -169,9 +169,10 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (
             config.settlementAsset == address(0) || config.protocolRegistry == address(0)
                 || config.governor == address(0) || config.treasury == address(0)
-                || config.insuranceReserve == address(0) || config.randomnessAdapter == address(0)
-                || config.referralRegistry == address(0) || config.rewardController == address(0)
-                || vault_ == address(0) || positionToken_ == address(0) || settlementEngine_ == address(0)
+                || config.insuranceReserve == address(0) || config.buybackReceiver == address(0)
+                || config.randomnessAdapter == address(0) || config.referralRegistry == address(0)
+                || config.rewardController == address(0) || vault_ == address(0)
+                || positionToken_ == address(0) || settlementEngine_ == address(0)
                 || epochCoordinator_ == address(0)
         ) revert ZeroAddress();
         if (
@@ -181,6 +182,8 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
         uint8 decimals = IERC20Metadata(config.settlementAsset).decimals();
         if (decimals > 18) revert InvalidConfiguration();
+        uint256 factor = 10 ** (18 - decimals);
+        if (uint256(config.maxBacking) * factor > WEIGHT_NUMERATOR) revert InvalidConfiguration();
 
         marketId = config.marketId;
         collectionSetId = config.collectionSetId;
@@ -197,7 +200,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         decisionWindow = config.decisionWindow;
         markupBps = config.markupBps;
         settlementDecimals = decimals;
-        normalizationFactor = 10 ** (18 - decimals);
+        normalizationFactor = factor;
 
         eligibilityPolicy = IEligibilityPolicy(config.eligibilityPolicy);
         rewardController = IRewardController(config.rewardController);
@@ -357,12 +360,14 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (msg.sender != address(settlementEngine)) revert Ineligible(msg.sender);
         if (boundaryActive) revert EpochBoundaryPending();
         _validateBacking(backing);
+        if (!_canDeposit(owner)) revert Ineligible(owner);
         positionId = nextPositionId++;
         ProtocolTypes.Position storage position = positions[positionId];
         position.collection = collection;
         position.tokenId = tokenId;
         position.backing = backing;
         position.earningsRecipient = earningsRecipient;
+        if (!_canReceive(owner, positionId)) revert Ineligible(owner);
         backingLiability += backing;
         vault.depositSettlement(payer, backing);
         positionToken.mint(owner, positionId);

@@ -136,7 +136,6 @@ contract DrawMarketTest is Test {
     }
 
     function testPullIncludesSelectedPositionEarningsAndSettlesKeep() external {
-        uint256 aliceBefore = asset.balanceOf(alice);
         uint256 price = _drawOne(7);
         ProtocolTypes.PullReceiptData memory receipt =
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
@@ -160,7 +159,7 @@ contract DrawMarketTest is Test {
         vm.expectRevert();
         positionToken.ownerOf(selectedId);
         assertEq(collection.ownerOf(receipt.positionId), buyer);
-        assertGt(asset.balanceOf(originalOwner), originalOwner == alice ? aliceBefore : 0);
+        assertGt(engine.settlementClaims(originalOwner), 0);
         assertEq(
             uint8(PullReceipt(address(engine.pullReceipt())).receiptData(1).status),
             uint8(ProtocolTypes.PullStatus.Settled)
@@ -173,10 +172,9 @@ contract DrawMarketTest is Test {
         _drawOne(42);
         ProtocolTypes.PullReceiptData memory receipt =
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
-        uint256 buyerBefore = asset.balanceOf(buyer);
         vm.prank(buyer);
         engine.settleCash(1);
-        assertEq(asset.balanceOf(buyer) - buyerBefore, uint256(receipt.selectedBacking) * 8_500 / 10_000);
+        assertEq(engine.settlementClaims(buyer), uint256(receipt.selectedBacking) * 8_500 / 10_000);
         assertGt(engine.securityLiability(), 0);
         assertGt(engine.buybackLiability(), 0);
         assertGt(engine.protocolLiability(), 0);
@@ -189,9 +187,10 @@ contract DrawMarketTest is Test {
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
         (,, address previousOwner,,,,) = engine.selectedPositions(1);
         vm.prank(buyer);
-        engine.settleDraw(1);
+        engine.settleDraw(1, 80 ether, hex"1234");
         uint256 expectedBuyerInput = uint256(receipt.selectedBacking) * 8_500 / 10_000;
-        assertEq(rewards.queued(buyer, address(asset)), expectedBuyerInput);
+        assertEq(rewards.settlementInput(buyer, address(asset)), expectedBuyerInput);
+        assertEq(rewards.lastMinDrawOut(), 80 ether);
         assertEq(collection.ownerOf(receipt.positionId), previousOwner);
         assertTrue(market.solvent());
     }

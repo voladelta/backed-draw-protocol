@@ -19,6 +19,7 @@ contract SettlementEngine is ReentrancyGuard {
     error NothingToClaim();
     error NotNFTClaimOwner();
     error InvalidNFTClaimReceiver();
+    error InvalidSettlementClaimReceiver();
     error NFTClaimAlreadyExists();
     error SolvencyInvariantBroken(uint256 assets, uint256 liabilities);
 
@@ -54,6 +55,7 @@ contract SettlementEngine is ReentrancyGuard {
     mapping(uint256 receiptId => SelectedPosition position) public selectedPositions;
     mapping(uint256 receiptId => address referrer) public receiptReferrer;
     mapping(address referrer => uint256 amount) public referralClaims;
+    mapping(address account => uint256 amount) public settlementClaims;
     mapping(address collection => mapping(uint256 tokenId => address owner)) public pendingNFTClaims;
 
     uint256 public selectedBackingLiability;
@@ -63,6 +65,7 @@ contract SettlementEngine is ReentrancyGuard {
     uint256 public securityLiability;
     uint256 public buybackLiability;
     uint256 public protocolLiability;
+    uint256 public settlementClaimLiability;
 
     event SelectionRegistered(
         uint256 indexed receiptId, uint256 indexed positionId, address indexed buyer, uint256 backing
@@ -76,6 +79,8 @@ contract SettlementEngine is ReentrancyGuard {
     event NFTClaimed(
         address indexed collection, uint256 indexed tokenId, address indexed claimOwner, address receiver
     );
+    event SettlementPayoutAccrued(address indexed claimOwner, uint256 amount);
+    event SettlementPayoutClaimed(address indexed claimOwner, address indexed receiver, uint256 amount);
 
     constructor(
         address market_,
@@ -175,26 +180,34 @@ contract SettlementEngine is ReentrancyGuard {
         uint256 buyerPayout = uint256(position.backing) * CASH_PAYOUT_BPS / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - buyerPayout, receiptReferrer[receiptId]);
+        _accrueSettlementClaim(msg.sender, buyerPayout);
+        _consumeEarnings(position);
         delete selectedPositions[receiptId];
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
-        _consumeEarnings(position);
-        vault.releaseSettlement(msg.sender, buyerPayout);
+        _fundRewardInput(position);
         _deliverOrDeferNFT(position.previousOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
 
-    function settleDraw(uint256 receiptId) external nonReentrant {
+    function settleDraw(uint256 receiptId, uint256 minDrawOut, bytes calldata routeData)
+        external
+        nonReentrant
+        returns (uint256 drawAmount)
+    {
         ProtocolTypes.PullReceiptData memory data = _requireReceiptOwner(receiptId);
         SelectedPosition memory position = selectedPositions[receiptId];
         _markSettled(receiptId, data.positionId, ProtocolTypes.SettlementChoice.Draw);
         uint256 rewardAmount = uint256(position.backing) * CASH_PAYOUT_BPS / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - rewardAmount, receiptReferrer[receiptId]);
+        _consumeEarnings(position);
         delete selectedPositions[receiptId];
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
-        _consumeEarnings(position);
+        _fundRewardInput(position);
         vault.releaseSettlement(address(rewardController), rewardAmount);
-        rewardController.enqueue(msg.sender, settlementAsset, rewardAmount);
+        drawAmount = rewardController.swapSettlement(
+            msg.sender, settlementAsset, rewardAmount, minDrawOut, routeData
+        );
         _deliverOrDeferNFT(position.previousOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
@@ -213,14 +226,26 @@ contract SettlementEngine is ReentrancyGuard {
         uint256 ownerPayout = uint256(position.backing) * KEEP_PAYOUT_BPS / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - ownerPayout, receiptReferrer[receiptId]);
+        _accrueSettlementClaim(position.previousOwner, ownerPayout);
+        _consumeEarnings(position);
         delete selectedPositions[receiptId];
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
-        _consumeEarnings(position);
+        _fundRewardInput(position);
         positionId = IMarketSettlementCallback(market)
             .relistFromSettlement(
                 msg.sender, msg.sender, position.collection, position.tokenId, newBacking, msg.sender
             );
-        vault.releaseSettlement(position.previousOwner, ownerPayout);
+        _assertSolvent();
+    }
+
+    function claimSettlement(address receiver) external nonReentrant {
+        if (receiver == address(0)) revert InvalidSettlementClaimReceiver();
+        uint256 amount = settlementClaims[msg.sender];
+        if (amount == 0) revert NothingToClaim();
+        settlementClaims[msg.sender] = 0;
+        settlementClaimLiability -= amount;
+        vault.releaseSettlement(receiver, amount);
+        emit SettlementPayoutClaimed(msg.sender, receiver, amount);
         _assertSolvent();
     }
 
@@ -268,7 +293,7 @@ contract SettlementEngine is ReentrancyGuard {
 
     function totalLiabilities() public view returns (uint256) {
         return selectedBackingLiability + earningsLiability + rewardInputLiability + referralLiability
-            + securityLiability + buybackLiability + protocolLiability;
+            + securityLiability + buybackLiability + protocolLiability + settlementClaimLiability;
     }
 
     function _settleKeep(uint256 receiptId, ProtocolTypes.PullReceiptData memory data, address receiptOwner)
@@ -279,10 +304,11 @@ contract SettlementEngine is ReentrancyGuard {
         uint256 ownerPayout = uint256(position.backing) * KEEP_PAYOUT_BPS / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - ownerPayout, receiptReferrer[receiptId]);
+        _accrueSettlementClaim(position.previousOwner, ownerPayout);
+        _consumeEarnings(position);
         delete selectedPositions[receiptId];
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
-        _consumeEarnings(position);
-        vault.releaseSettlement(position.previousOwner, ownerPayout);
+        _fundRewardInput(position);
         _deliverOrDeferNFT(receiptOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
@@ -295,15 +321,25 @@ contract SettlementEngine is ReentrancyGuard {
     }
 
     function _consumeEarnings(SelectedPosition memory position) private {
-        if (position.cashEarnings != 0) earningsLiability -= position.cashEarnings;
-        if (position.rewardInput != 0) rewardInputLiability -= position.rewardInput;
         if (position.cashEarnings != 0) {
-            vault.releaseSettlement(position.earningsRecipient, position.cashEarnings);
+            earningsLiability -= position.cashEarnings;
+            _accrueSettlementClaim(position.earningsRecipient, position.cashEarnings);
         }
+        if (position.rewardInput != 0) rewardInputLiability -= position.rewardInput;
+    }
+
+    function _fundRewardInput(SelectedPosition memory position) private {
         if (position.rewardInput != 0) {
             vault.releaseSettlement(address(rewardController), position.rewardInput);
             rewardController.enqueue(position.earningsRecipient, settlementAsset, position.rewardInput);
         }
+    }
+
+    function _accrueSettlementClaim(address claimOwner, uint256 amount) private {
+        if (amount == 0) return;
+        settlementClaims[claimOwner] += amount;
+        settlementClaimLiability += amount;
+        emit SettlementPayoutAccrued(claimOwner, amount);
     }
 
     function _allocateSettlementRevenue(uint256 revenue, address referrer) private {

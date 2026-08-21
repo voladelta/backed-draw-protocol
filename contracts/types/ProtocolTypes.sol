@@ -10,7 +10,8 @@ library ProtocolTypes {
         Selected,
         Settling,
         Closed,
-        Withdrawn
+        Withdrawn,
+        WithdrawalClaimable
     }
 
     enum EpochStatus {
@@ -20,7 +21,9 @@ library ProtocolTypes {
         RandomnessReady,
         Resolving,
         Finalized,
-        Cancelled
+        Cancelled,
+        Finalizing,
+        Cancelling
     }
 
     enum PullStatus {

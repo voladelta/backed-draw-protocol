@@ -189,12 +189,48 @@ contract EpochBoundaryTest is Test {
         assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
     }
 
+    function testStagedActivationCannotBypassCrownWithdrawalOrdering() external {
+        uint48 deadline = _startEpoch();
+        assertEq(market.crownPositionId(), 3);
+        vm.prank(carol);
+        market.requestWithdrawal(3);
+        _deposit(dave, 4, 50 ether);
+
+        _finalizeOrdersAfterDeadline(deadline);
+        vm.expectRevert(DrawMarket.EpochBoundaryPending.selector);
+        market.activatePosition(4);
+        vm.prank(bob);
+        vm.expectRevert(DrawMarket.EpochBoundaryPending.selector);
+        market.requestWithdrawal(2);
+        vm.prank(bob);
+        vm.expectRevert(DrawMarket.EpochBoundaryPending.selector);
+        market.requestBackingChange(2, 200 ether);
+        coordinator.advanceEpochBoundary(2);
+
+        assertEq(market.activePositionCount(), 3);
+        assertEq(market.crownPositionId(), 4);
+    }
+
+    function testBoundaryReassignsCrownWhenNoLaterMutationDoes() external {
+        uint48 deadline = _startEpoch();
+        vm.prank(carol);
+        market.requestWithdrawal(3);
+
+        _finalizeOrdersAfterDeadline(deadline);
+        coordinator.advanceEpochBoundary(1);
+
+        assertEq(market.activePositionCount(), 2);
+        assertEq(market.crownPositionId(), 1);
+    }
+
     function testQueuedBackingChangeAppliedBeforeNextSnapshot() external {
         uint48 deadline = _startEpoch();
         vm.prank(alice);
         market.requestBackingChange(1, 80 ether);
 
         _finalizeOrdersAfterDeadline(deadline);
+        vm.expectRevert(DrawMarket.EpochBoundaryPending.selector);
+        market.applyQueuedBackingChange(1);
         coordinator.advanceEpochBoundary(1);
 
         (,, uint128 backing, uint128 pending,, ProtocolTypes.PositionStatus status,,,,,,) =

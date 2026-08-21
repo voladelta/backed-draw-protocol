@@ -7,6 +7,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { ProtocolTypes } from "./types/ProtocolTypes.sol";
 import { IDrawMarket, IEpochCoordinator } from "./interfaces/IDrawMarket.sol";
+import { IProtocolRegistry } from "./interfaces/IProtocolRegistry.sol";
 import { ISwapAdapter } from "./interfaces/ISwapAdapter.sol";
 import { IWETH } from "./interfaces/IWETH.sol";
 
@@ -14,12 +15,14 @@ contract SwapAndPullRouter is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     error InvalidNativeValue();
+    error UnregisteredMarket(address market);
     error DeadlineExpired();
     error ExcessiveInput(uint256 actual, uint256 maximum);
     error NativeRefundFailed();
 
     bytes32 public constant ADAPTER_ADMIN_ROLE = keccak256("ADAPTER_ADMIN_ROLE");
 
+    IProtocolRegistry public immutable registry;
     address public immutable weth;
     ISwapAdapter public swapAdapter;
 
@@ -40,7 +43,8 @@ contract SwapAndPullRouter is AccessControl, ReentrancyGuard {
         uint256 amountOut
     );
 
-    constructor(address admin, address weth_, address swapAdapter_) {
+    constructor(address admin, address weth_, address swapAdapter_, address registry_) {
+        registry = IProtocolRegistry(registry_);
         weth = weth_;
         swapAdapter = ISwapAdapter(swapAdapter_);
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -64,6 +68,7 @@ contract SwapAndPullRouter is AccessControl, ReentrancyGuard {
         bytes calldata routeData
     ) external payable nonReentrant returns (uint256 orderIndex, uint256 amountIn) {
         if (order.deadline < block.timestamp) revert DeadlineExpired();
+        if (!registry.isMarket(marketAddress)) revert UnregisteredMarket(marketAddress);
         IDrawMarket market = IDrawMarket(marketAddress);
         address settlement = market.settlementAsset();
         bool nativeInput = inputAsset == address(0);

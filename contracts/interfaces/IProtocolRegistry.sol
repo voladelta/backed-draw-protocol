@@ -8,6 +8,7 @@ interface IProtocolRegistry {
     function referralRegistryApproved(address registry) external view returns (bool);
     function rewardControllerApproved(address controller) external view returns (bool);
     function routerApproved(address router) external view returns (bool);
+    function isMarket(address market) external view returns (bool);
     function canCreateMarket(address creator) external view returns (bool);
     function implementationCodeHash(uint32 version) external view returns (bytes32);
 }

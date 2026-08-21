@@ -27,7 +27,7 @@ contract PullReceipt is ERC721 {
     {
         _receiptData[receiptId] = data;
         isFrozen[receiptId] = true;
-        _safeMint(to, receiptId);
+        _mint(to, receiptId);
     }
 
     function updateStatus(uint256 receiptId, ProtocolTypes.PullStatus status, bool frozen)

@@ -1,35 +1,58 @@
+import * as stylex from "@stylexjs/stylex"
+import type { StyleXStyles } from "@stylexjs/stylex"
 import type { HTMLAttributes } from "react"
 
-import { cn } from "@/lib/utils"
+import { colors } from "../../styles/tokens.stylex"
 
-export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return (
-    <div
-      className={cn(
-        "rounded-2xl border border-white/[0.09] bg-slate-900/60 shadow-[0_16px_50px_rgba(0,0,0,0.18)] backdrop-blur-xl",
-        className,
-      )}
-      {...props}
-    />
-  )
+type StyledDivProps = Omit<HTMLAttributes<HTMLDivElement>, "className" | "style"> & {
+  style?: StyleXStyles
 }
 
-export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex flex-col gap-1.5 p-5", className)} {...props} />
+type StyledHeadingProps = Omit<HTMLAttributes<HTMLHeadingElement>, "className" | "style"> & {
+  style?: StyleXStyles
 }
 
-export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("font-semibold tracking-[-0.025em] text-white", className)} {...props} />
+type StyledParagraphProps = Omit<HTMLAttributes<HTMLParagraphElement>, "className" | "style"> & {
+  style?: StyleXStyles
 }
 
-export function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("text-sm leading-6 text-slate-400", className)} {...props} />
+const styles = stylex.create({
+  card: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(255,255,255,0.09)",
+    backgroundColor: "rgba(15,23,42,0.6)",
+    boxShadow: "0 16px 50px rgba(0,0,0,0.18)",
+    backdropFilter: "blur(24px)",
+  },
+  header: { display: "flex", flexDirection: "column", rowGap: 6, padding: 20 },
+  title: { fontWeight: 600, letterSpacing: "-0.025em", color: colors.white },
+  description: { fontSize: 14, lineHeight: 1.5, color: colors.slate400 },
+  content: { padding: 20, paddingTop: 0 },
+  footer: { display: "flex", alignItems: "center", padding: 20, paddingTop: 0 },
+})
+
+export function Card({ style, ...props }: StyledDivProps) {
+  return <div {...props} {...stylex.props(styles.card, style)} />
 }
 
-export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("p-5 pt-0", className)} {...props} />
+export function CardHeader({ style, ...props }: StyledDivProps) {
+  return <div {...props} {...stylex.props(styles.header, style)} />
 }
 
-export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex items-center p-5 pt-0", className)} {...props} />
+export function CardTitle({ style, ...props }: StyledHeadingProps) {
+  return <h3 {...props} {...stylex.props(styles.title, style)} />
+}
+
+export function CardDescription({ style, ...props }: StyledParagraphProps) {
+  return <p {...props} {...stylex.props(styles.description, style)} />
+}
+
+export function CardContent({ style, ...props }: StyledDivProps) {
+  return <div {...props} {...stylex.props(styles.content, style)} />
+}
+
+export function CardFooter({ style, ...props }: StyledDivProps) {
+  return <div {...props} {...stylex.props(styles.footer, style)} />
 }

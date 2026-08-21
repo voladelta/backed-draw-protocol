@@ -51,7 +51,7 @@ function RootLayout() {
     },
   ]
   return (
-    <AppShell mainClassName="app-main" navigation={nav} walletSlot={<WalletButton />}>
+    <AppShell navigation={nav} walletSlot={<WalletButton />}>
       <Outlet />
     </AppShell>
   )

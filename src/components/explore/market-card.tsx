@@ -1,9 +1,11 @@
 import { ArrowUpRight, Check, Crown, Dices, Layers3, Sparkles, type LucideIcon } from "lucide-react"
+import * as stylex from "@stylexjs/stylex"
+import type { StyleXStyles } from "@stylexjs/stylex"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { cn } from "@/lib/utils"
+import { colors } from "../../styles/tokens.stylex"
 
 import type { MarketData } from "./types"
 
@@ -11,7 +13,7 @@ export interface MarketCardProps {
   market: MarketData
   onPull?: (market: MarketData) => void
   onOpen?: (market: MarketData) => void
-  className?: string
+  style?: StyleXStyles
 }
 
 const statusCopy = {
@@ -20,38 +22,239 @@ const statusCopy = {
   "coming-soon": "Coming soon",
 } as const
 
-export function MarketCard({ market, onPull, onOpen, className }: MarketCardProps) {
+const styles = stylex.create({
+  card: {
+    position: "relative",
+    display: "flex",
+    height: "100%",
+    flexDirection: "column",
+    overflow: "hidden",
+    borderColor: { default: "rgba(255,255,255,0.09)", ":hover": "rgba(190,242,100,0.25)" },
+    boxShadow: {
+      default: "0 16px 50px rgba(0,0,0,0.18)",
+      ":hover": "0 22px 60px rgba(0,0,0,0.35)",
+    },
+    transitionProperty: "border-color, box-shadow",
+    transitionDuration: "200ms",
+    transitionTimingFunction: "ease-out",
+  },
+  body: { display: "flex", flex: 1, flexDirection: "column", padding: 20 },
+  headingRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  minWidth: { minWidth: 0 },
+  collection: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: 6,
+    color: colors.slate400,
+    fontSize: 12,
+  },
+  truncate: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  checkIcon: { width: 14, height: 14, color: colors.lime300 },
+  title: {
+    marginTop: 4,
+    overflow: "hidden",
+    color: colors.white,
+    fontSize: 18,
+    fontWeight: 600,
+    letterSpacing: "-0.035em",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  stats: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 1,
+    marginTop: 20,
+    overflow: "hidden",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  pullRow: {
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 12,
+    marginTop: 20,
+  },
+  label: {
+    color: colors.slate500,
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.12em",
+  },
+  price: {
+    marginTop: 4,
+    color: colors.white,
+    fontSize: 20,
+    fontWeight: 600,
+    letterSpacing: "-0.04em",
+  },
+  asset: { color: colors.slate400, fontSize: 14 },
+  usdPrice: { marginTop: 2, color: colors.slate500, fontSize: 12 },
+  footer: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 20,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: "rgba(255,255,255,0.08)",
+  },
+  backing: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: 6,
+    color: colors.slate400,
+    fontSize: 12,
+  },
+  crownIcon: { width: 14, height: 14, color: colors.amber200 },
+  actions: { display: "flex", alignItems: "center", columnGap: 8 },
+  icon16: { width: 16, height: 16 },
+  icon14: { width: 14, height: 14 },
+  stat: { minWidth: 0, paddingBlock: 12, paddingInline: 14, backgroundColor: "rgba(13,19,32,0.9)" },
+  statLabel: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: 6,
+    color: colors.slate500,
+    fontSize: 10,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.1em",
+  },
+  icon12: { width: 12, height: 12 },
+  statValue: {
+    marginTop: 4,
+    overflow: "hidden",
+    color: colors.slate100,
+    fontSize: 14,
+    fontWeight: 600,
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  preview: {
+    position: "relative",
+    aspectRatio: "16 / 10",
+    overflow: "hidden",
+    borderBottomWidth: 1,
+    borderBottomStyle: "solid",
+    borderBottomColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#111827",
+  },
+  previewImage: { width: "100%", height: "100%", objectFit: "cover" },
+  previewFallback: (accent: string) => ({
+    position: "relative",
+    width: "100%",
+    height: "100%",
+    overflow: "hidden",
+    backgroundImage: `radial-gradient(circle at 68% 25%, ${accent}88, transparent 25%), linear-gradient(135deg, #111827 0%, #162033 48%, #080b12 100%)`,
+  }),
+  circle: {
+    position: "absolute",
+    top: -64,
+    right: -48,
+    width: 208,
+    height: 208,
+    borderRadius: "50%",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  diamond: {
+    position: "absolute",
+    bottom: -64,
+    left: "14%",
+    width: 208,
+    height: 208,
+    borderRadius: 36,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(255,255,255,0.035)",
+    transform: "rotate(45deg)",
+  },
+  grid: {
+    position: "absolute",
+    inset: 0,
+    opacity: 0.2,
+    backgroundImage:
+      "linear-gradient(rgba(255,255,255,.18) 1px,transparent 1px), linear-gradient(90deg,rgba(255,255,255,.18) 1px,transparent 1px)",
+    backgroundSize: "28px 28px",
+  },
+  fallbackLabel: {
+    position: "absolute",
+    insetInline: 20,
+    bottom: 20,
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+  },
+  nftName: {
+    maxWidth: "72%",
+    color: "rgba(255,255,255,0.95)",
+    fontSize: 24,
+    fontWeight: 900,
+    lineHeight: 0.85,
+    textTransform: "uppercase",
+    letterSpacing: "-0.08em",
+  },
+  tokenId: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(255,255,255,0.2)",
+    paddingBlock: 4,
+    paddingInline: 8,
+    backgroundColor: "rgba(2,6,23,0.35)",
+    color: "rgba(255,255,255,0.75)",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: 10,
+  },
+  previewShade: {
+    pointerEvents: "none",
+    position: "absolute",
+    inset: 0,
+    backgroundImage:
+      "linear-gradient(to top, rgba(2,6,23,0.3), transparent, rgba(255,255,255,0.02))",
+  },
+})
+
+export function MarketCard({ market, onPull, onOpen, style }: MarketCardProps) {
   const status = market.status ?? "active"
   const isLive = status === "active"
 
   return (
-    <Card
-      className={cn(
-        "group relative flex h-full flex-col overflow-hidden transition-[border-color,box-shadow] duration-200 ease-out hover:border-lime-300/25 hover:shadow-[0_22px_60px_rgba(0,0,0,0.35)]",
-        className,
-      )}
-    >
+    <Card style={[styles.card, style]}>
       <NftPreview nft={market.featuredNft} />
 
-      <div className="flex flex-1 flex-col p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span className="truncate">{market.collection.name}</span>
+      <div {...stylex.props(styles.body)}>
+        <div {...stylex.props(styles.headingRow)}>
+          <div {...stylex.props(styles.minWidth)}>
+            <div {...stylex.props(styles.collection)}>
+              <span {...stylex.props(styles.truncate)}>{market.collection.name}</span>
               {market.collection.verified ? (
-                <Check aria-label="Verified collection" className="size-3.5 text-lime-300" />
+                <Check aria-label="Verified collection" {...stylex.props(styles.checkIcon)} />
               ) : null}
             </div>
-            <h3 className="mt-1 truncate text-lg font-semibold tracking-[-0.035em] text-white">
-              {market.name}
-            </h3>
+            <h3 {...stylex.props(styles.title)}>{market.name}</h3>
           </div>
           <Badge dot variant={isLive ? "success" : "muted"}>
             {statusCopy[status]}
           </Badge>
         </div>
 
-        <div className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.08]">
+        <div {...stylex.props(styles.stats)}>
           <Stat
             icon={Layers3}
             label="Active positions"
@@ -60,25 +263,23 @@ export function MarketCard({ market, onPull, onOpen, className }: MarketCardProp
           <Stat icon={Sparkles} label="Total backing" value={market.totalBacking} />
         </div>
 
-        <div className="mt-5 flex items-end justify-between gap-3">
+        <div {...stylex.props(styles.pullRow)}>
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-              Next pull
-            </p>
-            <p className="mt-1 text-xl font-semibold tracking-[-0.04em] text-white">
+            <p {...stylex.props(styles.label)}>Next pull</p>
+            <p {...stylex.props(styles.price)}>
               {market.pullPrice}{" "}
-              <span className="text-sm text-slate-400">{market.settlementAsset}</span>
+              <span {...stylex.props(styles.asset)}>{market.settlementAsset}</span>
             </p>
             {market.pullPriceUsd ? (
-              <p className="mt-0.5 text-xs text-slate-500">{market.pullPriceUsd}</p>
+              <p {...stylex.props(styles.usdPrice)}>{market.pullPriceUsd}</p>
             ) : null}
           </div>
           <Badge variant="currency">{market.settlementAsset}</Badge>
         </div>
 
-        <div className="mt-5 grid grid-cols-[1fr_auto] items-center gap-3 border-t border-white/[0.08] pt-4">
-          <div className="flex items-center gap-1.5 text-xs text-slate-400">
-            <Crown aria-hidden className="size-3.5 text-amber-200" />
+        <div {...stylex.props(styles.footer)}>
+          <div {...stylex.props(styles.backing)}>
+            <Crown aria-hidden {...stylex.props(styles.crownIcon)} />
             <span>
               {market.crownBacking
                 ? `Crown · ${market.crownBacking}`
@@ -87,17 +288,17 @@ export function MarketCard({ market, onPull, onOpen, className }: MarketCardProp
                   : "Equal-share rewards"}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div {...stylex.props(styles.actions)}>
             <Button
               aria-label={`Open ${market.name}`}
               onClick={() => onOpen?.(market)}
               size="icon"
               variant="ghost"
             >
-              <ArrowUpRight aria-hidden className="size-4" />
+              <ArrowUpRight aria-hidden {...stylex.props(styles.icon16)} />
             </Button>
             <Button disabled={!isLive} onClick={() => onPull?.(market)} size="sm">
-              <Dices aria-hidden className="size-3.5" />
+              <Dices aria-hidden {...stylex.props(styles.icon14)} />
               Pull
             </Button>
           </div>
@@ -109,12 +310,12 @@ export function MarketCard({ market, onPull, onOpen, className }: MarketCardProp
 
 function Stat({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
-    <div className="min-w-0 bg-[#0d1320]/90 px-3.5 py-3">
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">
-        <Icon aria-hidden className="size-3" />
-        <span className="truncate">{label}</span>
+    <div {...stylex.props(styles.stat)}>
+      <div {...stylex.props(styles.statLabel)}>
+        <Icon aria-hidden {...stylex.props(styles.icon12)} />
+        <span {...stylex.props(styles.truncate)}>{label}</span>
       </div>
-      <p className="mt-1 truncate text-sm font-semibold text-slate-100">{value}</p>
+      <p {...stylex.props(styles.statValue)}>{value}</p>
     </div>
   )
 }
@@ -123,44 +324,25 @@ function NftPreview({ nft }: { nft: MarketData["featuredNft"] }) {
   const accent = nft.accent ?? "#bef264"
 
   return (
-    <div className="relative aspect-[16/10] overflow-hidden border-b border-white/[0.08] bg-[#111827]">
+    <div {...stylex.props(styles.preview)}>
       {nft.imageUrl ? (
-        <img alt={nft.name} className="size-full object-cover" src={nft.imageUrl} />
+        <img alt={nft.name} {...stylex.props(styles.previewImage)} src={nft.imageUrl} />
       ) : (
         <div
           aria-label={`${nft.name} preview`}
-          className="relative size-full overflow-hidden"
+          {...stylex.props(styles.previewFallback(accent))}
           role="img"
-          style={{
-            background: `radial-gradient(circle at 68% 25%, ${accent}88, transparent 25%), linear-gradient(135deg, #111827 0%, #162033 48%, #080b12 100%)`,
-          }}
         >
-          <div
-            aria-hidden
-            className="absolute -right-12 -top-16 size-52 rounded-full border border-white/20"
-          />
-          <div
-            aria-hidden
-            className="absolute -bottom-16 left-[14%] size-52 rotate-45 rounded-[36px] border border-white/10 bg-white/[0.035]"
-          />
-          <div
-            aria-hidden
-            className="absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.18)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.18)_1px,transparent_1px)] [background-size:28px_28px]"
-          />
-          <div className="absolute inset-x-5 bottom-5 flex items-end justify-between">
-            <span className="max-w-[72%] text-2xl font-black uppercase leading-[0.85] tracking-[-0.08em] text-white/95">
-              {nft.name}
-            </span>
-            <span className="rounded-lg border border-white/20 bg-slate-950/35 px-2 py-1 font-mono text-[10px] text-white/75">
-              {nft.tokenId ?? "1/1"}
-            </span>
+          <div aria-hidden {...stylex.props(styles.circle)} />
+          <div aria-hidden {...stylex.props(styles.diamond)} />
+          <div aria-hidden {...stylex.props(styles.grid)} />
+          <div {...stylex.props(styles.fallbackLabel)}>
+            <span {...stylex.props(styles.nftName)}>{nft.name}</span>
+            <span {...stylex.props(styles.tokenId)}>{nft.tokenId ?? "1/1"}</span>
           </div>
         </div>
       )}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/30 via-transparent to-white/[0.02]"
-      />
+      <div aria-hidden {...stylex.props(styles.previewShade)} />
     </div>
   )
 }

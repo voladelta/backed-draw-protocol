@@ -1,39 +1,106 @@
+import * as stylex from "@stylexjs/stylex"
+import type { StyleXStyles } from "@stylexjs/stylex"
 import type { ButtonHTMLAttributes, ReactNode } from "react"
 
-import { cn } from "@/lib/utils"
+import { breakpoints, colors } from "../../styles/tokens.stylex"
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "outline" | "danger"
 type ButtonSize = "sm" | "md" | "lg" | "icon"
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  "className" | "style"
+> {
   variant?: ButtonVariant
   size?: ButtonSize
   loading?: boolean
   static?: boolean
   children?: ReactNode
+  style?: StyleXStyles
 }
 
-const variantClasses: Record<ButtonVariant, string> = {
-  primary:
-    "border border-lime-300/80 bg-lime-300 text-slate-950 shadow-[0_0_0_1px_rgba(217,249,157,0.25),0_12px_34px_rgba(163,230,53,0.16)] hover:bg-lime-200",
-  secondary:
-    "border border-white/10 bg-white/[0.07] text-slate-100 hover:border-white/20 hover:bg-white/[0.12]",
-  ghost: "text-slate-300 hover:bg-white/[0.06] hover:text-white",
-  outline:
-    "border border-white/15 bg-transparent text-slate-100 hover:border-lime-300/50 hover:bg-lime-300/[0.07]",
-  danger: "border border-rose-400/30 bg-rose-400/10 text-rose-100 hover:bg-rose-400/20",
-}
+const spin = stylex.keyframes({ to: { transform: "rotate(360deg)" } })
 
-const sizeClasses: Record<ButtonSize, string> = {
-  sm: "h-9 gap-2 px-3 text-xs",
-  md: "h-10 gap-2 px-4 text-sm",
-  lg: "h-12 gap-2.5 px-5 text-sm",
-  icon: "size-10",
-}
+const styles = stylex.create({
+  base: {
+    display: "inline-flex",
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+    fontWeight: 600,
+    letterSpacing: "-0.01em",
+    transitionProperty: "transform, background-color, border-color, color, box-shadow",
+    transitionDuration: {
+      default: "150ms",
+      [breakpoints.reducedMotion]: "0.01ms",
+    },
+    transitionTimingFunction: "ease-out",
+    pointerEvents: { default: "auto", ":disabled": "none" },
+    cursor: { default: "pointer", ":disabled": "not-allowed" },
+    opacity: { default: 1, ":disabled": 0.45 },
+    outline: { default: "none", ":focus-visible": `2px solid ${colors.lime300}` },
+    outlineOffset: { default: 0, ":focus-visible": 2 },
+  },
+  motion: {
+    transform: { default: "scale(1)", ":active": "scale(0.96)" },
+  },
+  primary: {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(190, 242, 100, 0.8)",
+    backgroundColor: { default: colors.lime300, ":hover": colors.lime200 },
+    color: colors.slate950,
+    boxShadow: "0 0 0 1px rgba(217,249,157,0.25), 0 12px 34px rgba(163,230,53,0.16)",
+  },
+  secondary: {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: { default: "rgba(255,255,255,0.1)", ":hover": "rgba(255,255,255,0.2)" },
+    backgroundColor: { default: "rgba(255,255,255,0.07)", ":hover": "rgba(255,255,255,0.12)" },
+    color: colors.slate100,
+  },
+  ghost: {
+    borderWidth: 0,
+    backgroundColor: { default: "transparent", ":hover": "rgba(255,255,255,0.06)" },
+    color: { default: colors.slate300, ":hover": colors.white },
+  },
+  outline: {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: { default: "rgba(255,255,255,0.15)", ":hover": "rgba(190,242,100,0.5)" },
+    backgroundColor: { default: "transparent", ":hover": "rgba(190,242,100,0.07)" },
+    color: colors.slate100,
+  },
+  danger: {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(251,113,133,0.3)",
+    backgroundColor: { default: "rgba(251,113,133,0.1)", ":hover": "rgba(251,113,133,0.2)" },
+    color: colors.rose100,
+  },
+  sm: { height: 36, columnGap: 8, paddingInline: 12, fontSize: 12 },
+  md: { height: 40, columnGap: 8, paddingInline: 16, fontSize: 14 },
+  lg: { height: 48, columnGap: 10, paddingInline: 20, fontSize: 14 },
+  icon: { width: 40, height: 40 },
+  spinner: {
+    width: 14,
+    height: 14,
+    borderRadius: "50%",
+    borderWidth: 2,
+    borderStyle: "solid",
+    borderColor: "currentColor",
+    borderTopColor: "transparent",
+    animationName: spin,
+    animationDuration: "1s",
+    animationTimingFunction: "linear",
+    animationIterationCount: "infinite",
+  },
+})
 
 /** A compact, accessible action primitive for the dark protocol interface. */
 export function Button({
-  className,
+  style,
   variant = "primary",
   size = "md",
   loading = false,
@@ -45,24 +112,26 @@ export function Button({
 }: ButtonProps) {
   return (
     <button
-      className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-xl font-semibold tracking-[-0.01em] transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-out disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
-        !staticMotion && "active:scale-[0.96]",
-        variantClasses[variant],
-        sizeClasses[size],
-        className,
+      {...props}
+      {...stylex.props(
+        styles.base,
+        !staticMotion && styles.motion,
+        variant === "primary" && styles.primary,
+        variant === "secondary" && styles.secondary,
+        variant === "ghost" && styles.ghost,
+        variant === "outline" && styles.outline,
+        variant === "danger" && styles.danger,
+        size === "sm" && styles.sm,
+        size === "md" && styles.md,
+        size === "lg" && styles.lg,
+        size === "icon" && styles.icon,
+        style,
       )}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       type={type}
-      {...props}
     >
-      {loading ? (
-        <span
-          aria-hidden="true"
-          className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-        />
-      ) : null}
+      {loading ? <span aria-hidden="true" {...stylex.props(styles.spinner)} /> : null}
       {children}
     </button>
   )

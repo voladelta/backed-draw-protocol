@@ -16,6 +16,7 @@ import {
   Trophy,
   WalletCards,
 } from "lucide-react"
+import * as stylex from "@stylexjs/stylex"
 import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { useAccount, useWriteContract } from "wagmi"
 import { parseUnits, zeroHash } from "viem"
@@ -32,6 +33,20 @@ const NftCardScene = lazy(() =>
   import("@/components/nft/nft-card-scene").then((module) => ({ default: module.NftCardScene })),
 )
 const shortenWallet = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
+
+const accessibilityStyles = stylex.create({
+  visuallyHidden: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    padding: 0,
+    margin: -1,
+    overflow: "hidden",
+    clip: "rect(0, 0, 0, 0)",
+    whiteSpace: "nowrap",
+    borderWidth: 0,
+  },
+})
 
 type PullExperienceProps = {
   market: Market
@@ -58,7 +73,9 @@ export function PullExperience(props: PullExperienceProps) {
 
   return (
     <div className="gacha-page">
-      <h1 className="sr-only">Pull a collectible from {props.market.name}</h1>
+      <h1 {...stylex.props(accessibilityStyles.visuallyHidden)}>
+        Pull a collectible from {props.market.name}
+      </h1>
       <PoolTabs activeMarketId={props.market.id} onMarketChange={props.onMarketChange} />
       <section
         aria-label={`${props.market.name} collectible pull machine`}
@@ -79,7 +96,7 @@ export function PullExperience(props: PullExperienceProps) {
         <PullCommand {...props} key={`command-${props.market.id}`} position={revealedPosition} />
       </section>
       <RecentPulls />
-      <p aria-live="polite" className="sr-only" role="status">
+      <p aria-live="polite" {...stylex.props(accessibilityStyles.visuallyHidden)} role="status">
         {props.stage === "configure"
           ? `${props.market.name} pull ready. ${props.count} ${props.count === 1 ? "pull" : "pulls"} selected.`
           : props.stage === "drawing"

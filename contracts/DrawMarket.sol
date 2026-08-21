@@ -271,6 +271,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function activatePosition(uint256 positionId) external nonReentrant {
+        if (boundaryActive) revert EpochBoundaryPending();
         if (_treeLocked()) revert InvalidConfiguration();
         ProtocolTypes.Position storage position = positions[positionId];
         if (position.status != ProtocolTypes.PositionStatus.Staged) {
@@ -280,6 +281,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function requestWithdrawal(uint256 positionId) external nonReentrant {
+        if (boundaryActive) revert EpochBoundaryPending();
         if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
         ProtocolTypes.Position storage position = positions[positionId];
         if (position.status == ProtocolTypes.PositionStatus.Staged) {
@@ -299,6 +301,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function requestBackingChange(uint256 positionId, uint128 newBacking) external nonReentrant {
+        if (boundaryActive) revert EpochBoundaryPending();
         if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
         _validateBacking(newBacking);
         ProtocolTypes.Position storage position = positions[positionId];
@@ -377,6 +380,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function applyQueuedBackingChange(uint256 positionId) external nonReentrant {
+        if (boundaryActive) revert EpochBoundaryPending();
         if (_treeLocked()) revert InvalidConfiguration();
         ProtocolTypes.Position storage position = positions[positionId];
         if (position.status != ProtocolTypes.PositionStatus.BackingChangeQueued) {
@@ -413,6 +417,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function challengeCrown(uint256 positionId) external {
+        if (boundaryActive) revert EpochBoundaryPending();
         ProtocolTypes.Position storage position = positions[positionId];
         if (position.status != ProtocolTypes.PositionStatus.Active) {
             revert InvalidPositionState(positionId, position.status);
@@ -444,7 +449,10 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
             _backingChangeQueue.length - _backingChangeCursor,
             _activationQueue.length - _activationCursor
         );
-        if (!boundaryActive) emit EpochBoundaryCompleted();
+        if (!boundaryActive) {
+            _ensureCrown();
+            emit EpochBoundaryCompleted();
+        }
     }
 
     function epochBoundaryPending() external view returns (bool) {
@@ -508,6 +516,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
         complete = !_hasBoundaryWork();
         if (complete) {
+            _ensureCrown();
             boundaryActive = false;
             emit EpochBoundaryCompleted();
         }
@@ -837,6 +846,14 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         return _withdrawalCursor < _withdrawalQueue.length
             || _backingChangeCursor < _backingChangeQueue.length
             || _activationCursor < _activationQueue.length;
+    }
+
+    function _ensureCrown() private {
+        if (crownPositionId != 0 || activePositionCount == 0) return;
+        uint32 slot = _tree.find(0);
+        uint256 positionId = positionAtSlot[slot];
+        crownPositionId = positionId;
+        emit CrownChanged(0, positionId, 0);
     }
 
     function _prepareWithdrawal(uint256 positionId, ProtocolTypes.Position storage position) private {

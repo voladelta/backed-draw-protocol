@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 interface IDrawMarketCore {
+    error IneligibleReceiver(address user);
+
     function activePositionCount() external view returns (uint32);
     function currentPullPrice() external view returns (uint256);
     function canPullUser(address user) external view returns (bool);

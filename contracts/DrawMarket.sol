@@ -14,6 +14,7 @@ import { ProtocolTypes } from "./types/ProtocolTypes.sol";
 import { IEligibilityPolicy } from "./interfaces/IEligibilityPolicy.sol";
 import { IRewardController } from "./interfaces/IRewardController.sol";
 import { IProtocolRegistry } from "./interfaces/IProtocolRegistry.sol";
+import { IDrawMarketCore } from "./interfaces/IDrawMarketCore.sol";
 
 contract DrawMarket is AccessControl, ReentrancyGuard {
     using Math for uint256;
@@ -548,10 +549,11 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     ) external nonReentrant returns (uint256 receiptId, uint256 positionId, uint128 backing) {
         if (msg.sender != address(epochCoordinator) || !epochLocked) revert InvalidConfiguration();
         if (chargedPrice != currentPullPrice()) revert InvalidConfiguration();
-        _allocatePullPayment(chargedPrice);
         uint32 slot = _tree.find(randomValue % _tree.total());
         positionId = positionAtSlot[slot];
         ProtocolTypes.Position storage position = positions[positionId];
+        if (!_canReceive(receiver, positionId)) revert IDrawMarketCore.IneligibleReceiver(receiver);
+        _allocatePullPayment(chargedPrice);
         backing = position.backing;
         receiptId = _selectPosition(epochId, positionId, position, buyer, receiver, chargedPrice, referrer);
         emit PositionSelected(receiptId, positionId, buyer, chargedPrice, backing);

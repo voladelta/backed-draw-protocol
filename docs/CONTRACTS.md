@@ -50,6 +50,12 @@ sequenceDiagram
 
 Each draw recalculates `N`, total inverse-backing weight, expected value, and price after the previous selected leaf has been removed.
 
+`requestPullFor` can debit only the calling router, and that router must still be approved in `ProtocolRegistry` at call time. Registry deapproval therefore takes effect immediately even if the coordinator role has not yet been revoked.
+
+A randomness adapter revert, malformed response, zero request ID or request ID reused by the same adapter leaves the epoch in the observable `RandomnessRequested` state and emits `RandomnessRequestFailed`. Anyone can cancel and refund that epoch after `randomnessTimeout`. Each adapter's request IDs are permanently fenced to their originating epoch so a stale request cannot fulfill a later one.
+
+Each `resolveEpoch` budget unit covers one encountered queue entry or draw attempt, including completed, expired, ineligible and over-price orders. Receiver eligibility is evaluated with the market policy's `canReceive(receiver, selectedPositionId)` rule before selection; an ineligible order is refunded without resampling or removing the position.
+
 ## Liability conservation
 
 `DrawMarket.totalLiabilities()` includes its own liabilities plus those owned by its `EpochCoordinator` and `SettlementEngine`.

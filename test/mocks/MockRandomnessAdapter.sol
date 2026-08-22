@@ -6,13 +6,19 @@ import { IRandomnessAdapter } from "../../contracts/interfaces/IRandomnessAdapte
 contract MockRandomnessAdapter is IRandomnessAdapter {
     uint256 public seed;
     uint256 public nonce;
+    bool public requestsRevert;
     mapping(bytes32 requestId => bool pending) public pending;
 
     function setSeed(uint256 seed_) external {
         seed = seed_;
     }
 
+    function setRequestsRevert(bool requestsRevert_) external {
+        requestsRevert = requestsRevert_;
+    }
+
     function requestRandomness(bytes32 commitment, uint32) external returns (bytes32 requestId) {
+        require(!requestsRevert, "request failed");
         requestId = keccak256(abi.encode(msg.sender, commitment, ++nonce));
         pending[requestId] = true;
     }

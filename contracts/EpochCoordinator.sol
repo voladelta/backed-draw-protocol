@@ -24,6 +24,8 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     error RandomnessNotTimedOut();
     error NothingToClaim();
     error EpochBoundaryPending();
+    error RouterNotApproved(address router);
+    error InvalidPayer(address payer, address caller);
 
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
@@ -60,6 +62,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     uint256 public escrowLiability;
     uint256 public refundLiability;
     bool public pullsPaused;
+    mapping(address adapter => mapping(bytes32 requestId => uint256 epochId)) public randomnessRequestEpoch;
 
     event PullOrderSubmitted(
         uint256 indexed epochId,
@@ -69,6 +72,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         uint256 escrow
     );
     event RandomnessRequested(uint256 indexed epochId, bytes32 indexed requestId, bytes32 commitment);
+    event RandomnessRequestFailed(uint256 indexed epochId, address indexed adapter);
     event RandomnessReady(uint256 indexed epochId, uint256 randomSeed);
     event DrawResolved(
         uint256 indexed epochId,
@@ -141,6 +145,8 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         nonReentrant
         returns (uint256 orderIndex)
     {
+        if (!protocolRegistry.routerApproved(msg.sender)) revert RouterNotApproved(msg.sender);
+        if (payer != msg.sender) revert InvalidPayer(payer, msg.sender);
         return _requestPull(payer, buyer, input);
     }
 
@@ -161,8 +167,18 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         );
         epoch.status = ProtocolTypes.EpochStatus.RandomnessRequested;
         epoch.randomnessRequestedAt = uint48(block.timestamp);
-        epoch.requestId = randomnessAdapter.requestRandomness(commitment, 1);
-        emit RandomnessRequested(epoch.id, epoch.requestId, commitment);
+        IRandomnessAdapter adapter = randomnessAdapter;
+        try adapter.requestRandomness(commitment, 1) returns (bytes32 requestId) {
+            if (requestId == bytes32(0) || randomnessRequestEpoch[address(adapter)][requestId] != 0) {
+                emit RandomnessRequestFailed(epoch.id, address(adapter));
+                return;
+            }
+            epoch.requestId = requestId;
+            randomnessRequestEpoch[address(adapter)][requestId] = epoch.id;
+            emit RandomnessRequested(epoch.id, requestId, commitment);
+        } catch {
+            emit RandomnessRequestFailed(epoch.id, address(adapter));
+        }
     }
 
     function provideRandomness(bytes calldata proof) external nonReentrant {
@@ -172,7 +188,12 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         if (block.timestamp > uint256(epoch.randomnessRequestedAt) + randomnessTimeout) {
             revert RandomnessNotTimedOut();
         }
-        uint256[] memory words = randomnessAdapter.verifyAndConsume(epoch.requestId, proof);
+        bytes32 requestId = epoch.requestId;
+        IRandomnessAdapter adapter = randomnessAdapter;
+        if (requestId == bytes32(0) || randomnessRequestEpoch[address(adapter)][requestId] != epoch.id) {
+            revert InvalidOrder();
+        }
+        uint256[] memory words = adapter.verifyAndConsume(requestId, proof);
         if (words.length == 0) revert InvalidOrder();
         epoch.randomSeed = words[0];
         epoch.status = ProtocolTypes.EpochStatus.RandomnessReady;
@@ -192,6 +213,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         uint32 processed;
         while (processed < maxDraws && epoch.orderCursor < epochOrders.length) {
             ProtocolTypes.PullOrder storage order = epochOrders[epoch.orderCursor];
+            processed++;
             if (order.resolvedCount == order.drawCount) {
                 _refundOrder(order);
                 epoch.orderCursor++;
@@ -212,13 +234,26 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
             uint256 randomValue = uint256(
                 keccak256(abi.encode(epoch.randomSeed, epoch.id, epoch.totalResolved, epoch.orderCursor))
             );
-            (uint256 receiptId, uint256 positionId, uint128 backing) = market.resolveDraw(
+            try market.resolveDraw(
                 epoch.id, order.buyer, order.receiver, quotedPrice, order.referrer, randomValue
-            );
-            order.resolvedCount++;
-            epoch.totalResolved++;
-            processed++;
-            emit DrawResolved(epoch.id, receiptId, positionId, unitPrice, backing);
+            ) returns (
+                uint256 receiptId, uint256 positionId, uint128 backing
+            ) {
+                order.resolvedCount++;
+                epoch.totalResolved++;
+                emit DrawResolved(epoch.id, receiptId, positionId, unitPrice, backing);
+            } catch (bytes memory reason) {
+                if (!_isIneligibleReceiver(reason, order.receiver)) {
+                    assembly ("memory-safe") {
+                        revert(add(reason, 0x20), mload(reason))
+                    }
+                }
+                order.escrowRemaining += quotedPrice;
+                escrowLiability += unitPrice;
+                _refundOrder(order);
+                epoch.orderCursor++;
+                continue;
+            }
             if (order.resolvedCount == order.drawCount) {
                 _refundOrder(order);
                 epoch.orderCursor++;
@@ -355,6 +390,17 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
             refundClaims[order.buyer] += refund;
             refundLiability += refund;
         }
+    }
+
+    function _isIneligibleReceiver(bytes memory reason, address receiver) private pure returns (bool) {
+        if (reason.length != 36) return false;
+        bytes4 selector;
+        address rejectedUser;
+        assembly ("memory-safe") {
+            selector := mload(add(reason, 0x20))
+            rejectedUser := mload(add(reason, 0x24))
+        }
+        return selector == IDrawMarketCore.IneligibleReceiver.selector && rejectedUser == receiver;
     }
 
     function _completeBoundaryIfReady() private {

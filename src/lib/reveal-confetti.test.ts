@@ -7,8 +7,8 @@ const { addConfetti, constructConfetti } = vi.hoisted(() => ({
 
 vi.mock("js-confetti", () => ({
   default: class MockJSConfetti {
-    constructor() {
-      constructConfetti()
+    constructor(config: { canvas: HTMLCanvasElement }) {
+      constructConfetti(config)
     }
 
     addConfetti = addConfetti
@@ -22,16 +22,18 @@ afterEach(() => {
 })
 
 describe("reveal confetti", () => {
-  it("reuses one confetti canvas across reveals", async () => {
+  it("reuses one confetti instance for the same stage canvas", async () => {
     vi.stubGlobal("window", {
       matchMedia: vi.fn().mockReturnValue({ matches: false }),
     })
     const { launchRevealConfetti } = await import("./reveal-confetti")
+    const canvas = {} as HTMLCanvasElement
 
-    await launchRevealConfetti()
-    await launchRevealConfetti()
+    await launchRevealConfetti(canvas)
+    await launchRevealConfetti(canvas)
 
     expect(constructConfetti).toHaveBeenCalledTimes(1)
+    expect(constructConfetti).toHaveBeenCalledWith({ canvas })
     expect(addConfetti).toHaveBeenCalledTimes(2)
     expect(addConfetti).toHaveBeenCalledWith({
       confettiColors: ["#caff3a", "#eeffd2", "#70b9ff", "#ffffff", "#ffd166"],
@@ -40,13 +42,29 @@ describe("reveal confetti", () => {
     })
   })
 
+  it("creates a separate instance for each stage canvas", async () => {
+    vi.stubGlobal("window", {
+      matchMedia: vi.fn().mockReturnValue({ matches: false }),
+    })
+    const { launchRevealConfetti } = await import("./reveal-confetti")
+    const firstCanvas = {} as HTMLCanvasElement
+    const secondCanvas = {} as HTMLCanvasElement
+
+    await launchRevealConfetti(firstCanvas)
+    await launchRevealConfetti(secondCanvas)
+
+    expect(constructConfetti).toHaveBeenCalledTimes(2)
+    expect(constructConfetti).toHaveBeenNthCalledWith(1, { canvas: firstCanvas })
+    expect(constructConfetti).toHaveBeenNthCalledWith(2, { canvas: secondCanvas })
+  })
+
   it("does not load confetti when reduced motion is requested", async () => {
     vi.stubGlobal("window", {
       matchMedia: vi.fn().mockReturnValue({ matches: true }),
     })
     const { launchRevealConfetti } = await import("./reveal-confetti")
 
-    await launchRevealConfetti()
+    await launchRevealConfetti({} as HTMLCanvasElement)
 
     expect(constructConfetti).not.toHaveBeenCalled()
     expect(addConfetti).not.toHaveBeenCalled()

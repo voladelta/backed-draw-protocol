@@ -20,6 +20,15 @@
   padding: 70px 20px 88px;
 }
 
+.draw-card-confetti {
+  position: absolute;
+  z-index: 60;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .draw-card-stack,
 .draw-card-shuffle {
   position: relative;
@@ -690,33 +699,56 @@
 }
 
 .draw-card--shuffle {
+  --shuffle-delay: 0ms;
+  --shuffle-out-x: -32%;
+  --shuffle-out-angle: -9deg;
+  --shuffle-cross-x: 22%;
+  --shuffle-cross-angle: 5deg;
   top: 50%;
   left: 50%;
   z-index: calc(20 - var(--stack-index));
-  width: 62%;
-  height: 62%;
-  transform: translate(-50%, -50%) rotate(90deg);
+  width: 72%;
+  height: 72%;
+  transform: translate3d(-50%, -50%, 0);
+  transform-origin: center;
+  animation: draw-card-shuffle 1150ms var(--shuffle-delay) cubic-bezier(0.45, 0, 0.2, 1) 2 both;
   cursor: default;
 }
 
 .draw-card--shuffle-1 {
-  animation: draw-card-shuffle-a 650ms ease-in-out infinite alternate;
+  --shuffle-delay: 0ms;
 }
 
 .draw-card--shuffle-2 {
-  animation: draw-card-shuffle-b 720ms 80ms ease-in-out infinite alternate;
+  --shuffle-delay: 40ms;
+  --shuffle-out-x: 31%;
+  --shuffle-out-angle: 8deg;
+  --shuffle-cross-x: -24%;
+  --shuffle-cross-angle: -6deg;
 }
 
 .draw-card--shuffle-3 {
-  animation: draw-card-shuffle-c 680ms 160ms ease-in-out infinite alternate;
+  --shuffle-delay: 80ms;
+  --shuffle-out-x: -26%;
+  --shuffle-out-angle: -7deg;
+  --shuffle-cross-x: 27%;
+  --shuffle-cross-angle: 7deg;
 }
 
 .draw-card--shuffle-4 {
-  animation: draw-card-shuffle-b 760ms 220ms ease-in-out infinite alternate-reverse;
+  --shuffle-delay: 120ms;
+  --shuffle-out-x: 27%;
+  --shuffle-out-angle: 7deg;
+  --shuffle-cross-x: -29%;
+  --shuffle-cross-angle: -8deg;
 }
 
 .draw-card--shuffle-5 {
-  animation: draw-card-shuffle-a 700ms 300ms ease-in-out infinite alternate-reverse;
+  --shuffle-delay: 160ms;
+  --shuffle-out-x: -22%;
+  --shuffle-out-angle: -6deg;
+  --shuffle-cross-x: 30%;
+  --shuffle-cross-angle: 8deg;
 }
 
 @keyframes draw-card-throw-left {
@@ -755,30 +787,21 @@
   }
 }
 
-@keyframes draw-card-shuffle-a {
-  from {
-    transform: translate(-72%, -50%) rotate(77deg) scale(0.93);
+@keyframes draw-card-shuffle {
+  0%,
+  100% {
+    transform: translate3d(-50%, -50%, 0) rotate(0deg) scale(1);
   }
-  to {
-    transform: translate(-22%, -50%) rotate(101deg) scale(1.02);
+  22% {
+    transform: translate3d(calc(-50% + var(--shuffle-out-x)), -56%, 0)
+      rotate(var(--shuffle-out-angle)) scale(0.97);
   }
-}
-
-@keyframes draw-card-shuffle-b {
-  from {
-    transform: translate(-25%, -52%) rotate(96deg) scale(0.97);
+  48% {
+    transform: translate3d(calc(-50% + var(--shuffle-cross-x)), -44%, 0)
+      rotate(var(--shuffle-cross-angle)) scale(1.015);
   }
-  to {
-    transform: translate(-82%, -47%) rotate(82deg) scale(1.03);
-  }
-}
-
-@keyframes draw-card-shuffle-c {
-  from {
-    transform: translate(-61%, -42%) rotate(84deg) scale(1.03);
-  }
-  to {
-    transform: translate(-43%, -60%) rotate(99deg) scale(0.94);
+  72% {
+    transform: translate3d(-50%, -52%, 0) rotate(0deg) scale(0.985);
   }
 }
 

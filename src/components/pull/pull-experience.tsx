@@ -23,7 +23,6 @@ import { parseUnits, zeroHash } from "viem"
 import { recentDraws } from "@/data/markets"
 import { ALL_POOLS_ID, poolOptions } from "@/data/pool-selection"
 import { spinAudio } from "@/audio/spin-audio"
-import { launchRevealConfetti } from "@/lib/reveal-confetti"
 import { formatValue } from "@/lib/utils"
 import type { Market, Position, PullStage, SettlementAsset } from "@/types/protocol"
 import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/contracts"
@@ -34,6 +33,8 @@ const NftCardScene = lazy(() =>
   import("@/components/nft/nft-card-scene").then((module) => ({ default: module.NftCardScene })),
 )
 const shortenWallet = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
+const PREVIEW_SHUFFLE_DURATION_MS = 2600
+const PREVIEW_REVEAL_ACTION_LEAD_MS = 300
 
 const fadeIn = stylex.keyframes({
   from: { opacity: 0 },
@@ -122,8 +123,6 @@ export function PullExperience(props: PullExperienceProps) {
   const revealedPosition = props.revealedPositionId
     ? props.market.positions.find((position) => position.id === props.revealedPositionId)
     : undefined
-  const celebrateReveal = () => void launchRevealConfetti().catch(() => undefined)
-
   return (
     <div className="gacha-page">
       <h1 tabIndex={-1} {...stylex.props(accessibilityStyles.visuallyHidden)}>
@@ -141,7 +140,6 @@ export function PullExperience(props: PullExperienceProps) {
           activeIndex={carouselIndex}
           key={`stage-${props.market.id}`}
           market={props.market}
-          onRevealReady={celebrateReveal}
           onSelect={setCarouselIndex}
           position={revealedPosition}
           stage={props.stage}
@@ -242,14 +240,12 @@ function StageArtifact({
   position,
   activeIndex,
   onSelect,
-  onRevealReady,
 }: {
   market: Market
   stage: PullStage
   position?: Position
   activeIndex: number
   onSelect: (index: number) => void
-  onRevealReady: () => void
 }) {
   const isAllPools = market.id === ALL_POOLS_ID
   const [cycleRequest, setCycleRequest] = useState<DeckCycleRequest>({ id: 0, direction: 1 })
@@ -317,7 +313,6 @@ function StageArtifact({
               activeIndex={activeIndex}
               cycleRequest={cycleRequest}
               market={market}
-              onRevealReady={onRevealReady}
               onInspectionChange={setInspected}
               onSelect={onSelect}
               revealedPosition={position}
@@ -372,7 +367,7 @@ function StageArtifact({
             </strong>
             <small>
               {stage === "drawing"
-                ? "Five rapid shuffles before the top card turns over."
+                ? "Two full shuffles before the top card turns over."
                 : stage === "revealed"
                   ? `${formatValue(position?.backing ?? 0, position?.asset ?? market.asset)} backing`
                   : "Pull again whenever you are ready."}
@@ -430,7 +425,10 @@ function PullCommand({
       setPreviewRevealReady(false)
       return undefined
     }
-    const readyTimer = window.setTimeout(() => setPreviewRevealReady(true), 1400)
+    const readyTimer = window.setTimeout(
+      () => setPreviewRevealReady(true),
+      PREVIEW_SHUFFLE_DURATION_MS - PREVIEW_REVEAL_ACTION_LEAD_MS,
+    )
     return () => window.clearTimeout(readyTimer)
   }, [livePending, stage])
 
@@ -446,7 +444,7 @@ function PullCommand({
       setLivePending(false)
       spinAudio.start()
       onStage("drawing")
-      previewRevealTimer.current = window.setTimeout(revealPreviewNow, 1700)
+      previewRevealTimer.current = window.setTimeout(revealPreviewNow, PREVIEW_SHUFFLE_DURATION_MS)
       return
     }
     setError(null)

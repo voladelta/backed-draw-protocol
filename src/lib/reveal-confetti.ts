@@ -1,11 +1,19 @@
 import type JSConfetti from "js-confetti"
 
-let confettiPromise: Promise<JSConfetti> | undefined
+const confettiByCanvas = new WeakMap<HTMLCanvasElement, Promise<JSConfetti>>()
 
-const getConfetti = () =>
-  (confettiPromise ??= import("js-confetti").then(({ default: JSConfetti }) => new JSConfetti()))
+const getConfetti = (canvas: HTMLCanvasElement) => {
+  const existing = confettiByCanvas.get(canvas)
+  if (existing) return existing
 
-export async function launchRevealConfetti() {
+  const confetti = import("js-confetti").then(
+    ({ default: JSConfetti }) => new JSConfetti({ canvas }),
+  )
+  confettiByCanvas.set(canvas, confetti)
+  return confetti
+}
+
+export async function launchRevealConfetti(canvas: HTMLCanvasElement) {
   if (
     typeof window === "undefined" ||
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -13,7 +21,7 @@ export async function launchRevealConfetti() {
     return
   }
 
-  const confetti = await getConfetti()
+  const confetti = await getConfetti(canvas)
   await confetti.addConfetti({
     confettiColors: ["#caff3a", "#eeffd2", "#70b9ff", "#ffffff", "#ffd166"],
     confettiNumber: 140,

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,6 +18,7 @@ import {
   rubberBandDrag,
   wrapIndex,
 } from "@/components/nft/deck-motion"
+import { launchRevealConfetti } from "@/lib/reveal-confetti"
 import type { Market, Position, PullStage } from "@/types/protocol"
 import "@/components/nft/nft-card.css"
 
@@ -30,8 +32,6 @@ type NftCardSceneProps = {
   onSelect: (index: number) => void
   cycleRequest?: DeckCycleRequest
   onInspectionChange?: (inspected: boolean) => void
-  /** Fires once the reveal flip lands face-up (glow burst + confetti moment). */
-  onRevealReady?: () => void
 }
 
 type DragState = {
@@ -246,7 +246,6 @@ export function NftCardScene({
   onSelect,
   cycleRequest,
   onInspectionChange,
-  onRevealReady,
 }: NftCardSceneProps) {
   const reducedMotion = useMemo(prefersReducedMotion, [])
   const finePointer = useMemo(hasFinePointer, [])
@@ -262,6 +261,7 @@ export function NftCardScene({
   const lastCycleRequestRef = useRef(0)
   const revealAnnouncedRef = useRef(false)
   const activeCardRef = useRef<HTMLDivElement>(null)
+  const confettiCanvasRef = useRef<HTMLCanvasElement>(null)
   const restoreCardFocusRef = useRef(false)
 
   const positions = market.positions
@@ -455,7 +455,7 @@ export function NftCardScene({
     return () => window.cancelAnimationFrame(frame)
   }, [activeIndex])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (stage === "drawing") {
       if (activeCardRef.current) {
         resetCardPointer(activeCardRef.current)
@@ -466,19 +466,28 @@ export function NftCardScene({
       onInspectionChange?.(false)
       return
     }
+    if (stage === "configure") {
+      setFaceUp(false)
+      onInspectionChange?.(false)
+      return
+    }
     if (stage === "revealed" || stage === "settled") setFaceUp(true)
   }, [onInspectionChange, resetCardPointer, stage])
 
   useEffect(() => {
     if (stage !== "revealed" || revealAnnouncedRef.current) return
     revealAnnouncedRef.current = true
-    const announce = () => onRevealReady?.()
+    const announce = () => {
+      if (confettiCanvasRef.current) {
+        void launchRevealConfetti(confettiCanvasRef.current).catch(() => undefined)
+      }
+    }
     if (reducedMotion) {
       announce()
       return
     }
     revealTimerRef.current = setTimeout(announce, FLIP_DURATION_MS)
-  }, [onRevealReady, reducedMotion, stage])
+  }, [reducedMotion, stage])
 
   useEffect(() => {
     if (stage === "configure") onInspectionChange?.(faceUp)
@@ -571,6 +580,7 @@ export function NftCardScene({
             />
           </div>
         )}
+        <canvas aria-hidden="true" className="draw-card-confetti" ref={confettiCanvasRef} />
       </div>
     </div>
   )

@@ -14,8 +14,8 @@
   --surface-2: oklch(0.23 0.035 145);
   --surface-3: oklch(0.27 0.04 145);
   --line: oklch(0.88 0.03 140 / 0.13);
-  --muted: oklch(0.74 0.03 140);
-  --subtle: oklch(0.63 0.03 140);
+  --muted: oklch(0.85 0.025 140);
+  --subtle: oklch(0.77 0.025 140);
 }
 * {
   box-sizing: border-box;
@@ -78,7 +78,7 @@ summary:focus-visible,
   border-radius: 999px;
   background: oklch(0.91 0.22 112 / 0.09);
   color: oklch(0.94 0.04 125);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 750;
   transition:
     transform 0.15s ease-out,
@@ -328,8 +328,8 @@ summary:focus-visible,
 .asset-switch legend,
 .command-total > span {
   margin: 0;
-  color: #919a8d;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -344,7 +344,7 @@ summary:focus-visible,
   border-radius: 7px;
   background: rgba(202, 255, 58, 0.1);
   color: var(--lime);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
 }
 .command-price {
@@ -364,8 +364,8 @@ summary:focus-visible,
 .command-total small {
   display: block;
   margin-top: 5px;
-  color: #7b8476;
-  font-size: 11px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .count-control {
   margin: 23px 0;
@@ -429,8 +429,8 @@ summary:focus-visible,
 }
 .asset-switch small {
   margin-left: 5px;
-  color: #788172;
-  font-size: 9px;
+  color: var(--muted);
+  font-size: 11px;
 }
 .command-total {
   margin-top: 22px;
@@ -481,8 +481,9 @@ summary:focus-visible,
   align-items: center;
   gap: 6px;
   margin: 13px 0 0;
-  color: #758070;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .command-foot svg {
   width: 12px;
@@ -491,7 +492,7 @@ summary:focus-visible,
 .command-error {
   margin: 12px 0 -6px;
   color: #f6a8a8;
-  font-size: 11px;
+  font-size: 13px;
 }
 .command-locked {
   min-height: 225px;
@@ -534,7 +535,7 @@ summary:focus-visible,
 .artifact-stage-copy p {
   margin: 0;
   color: var(--lime);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -548,8 +549,8 @@ summary:focus-visible,
 .artifact-stage-copy small {
   display: block;
   margin-top: 4px;
-  color: #919c8b;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .command-state {
   min-height: 318px;
@@ -565,7 +566,7 @@ summary:focus-visible,
 .command-state > p {
   margin: 20px 0 0;
   color: var(--lime);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -577,21 +578,33 @@ summary:focus-visible,
   letter-spacing: -0.06em;
 }
 .command-state > small {
-  color: #90998b;
-  font-size: 11px;
+  color: var(--muted);
+  font-size: 12px;
   line-height: 1.5;
 }
 .command-state > button {
+  min-height: 40px;
   display: flex;
   align-items: center;
   gap: 7px;
   margin-top: 25px;
-  padding: 0;
+  margin-inline-start: -8px;
+  padding-inline: 8px;
   border: 0;
+  border-radius: 9px;
   background: transparent;
   color: var(--lime);
   font-size: 12px;
   font-weight: 800;
+  transition-property: color, background-color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.command-state > button:hover {
+  background: oklch(0.91 0.22 112 / 0.08);
+}
+.command-state > button:active {
+  transform: scale(0.96);
 }
 .command-state > button svg {
   width: 14px;
@@ -632,8 +645,8 @@ summary:focus-visible,
 }
 .recent-pulls-heading h2 {
   margin: 0;
-  color: #aeb8a8;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -643,8 +656,8 @@ summary:focus-visible,
   color: var(--lime);
 }
 .recent-pulls-heading > span {
-  color: #94a08d;
-  font-size: 9px;
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -690,8 +703,8 @@ summary:focus-visible,
   height: 34px;
   padding: 0 12px;
   background: #0c100d;
-  color: #6f796a;
-  font-size: 9px;
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.09em;
   text-align: left;
@@ -721,8 +734,8 @@ summary:focus-visible,
   height: 58px;
   padding: 7px 12px;
   border-bottom: 1px solid var(--line);
-  color: #899484;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 12px;
   white-space: nowrap;
 }
 .recent-pulls tbody tr:last-child td {
@@ -734,9 +747,9 @@ summary:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 .recent-wallet {
-  color: #aeb8a8;
+  color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 .recent-position {
@@ -756,7 +769,7 @@ summary:focus-visible,
 .recent-position strong {
   overflow: hidden;
   color: #e8eee3;
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -794,7 +807,7 @@ summary:focus-visible,
   padding: 8px 14px;
   border: 0;
   background: transparent;
-  color: #899484;
+  color: var(--subtle);
   text-align: start;
   transition:
     color 150ms ease-out,
@@ -868,8 +881,8 @@ summary:focus-visible,
   white-space: nowrap;
 }
 .pool-tabs small {
-  color: #717c6c;
-  font-size: 9px;
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -879,7 +892,7 @@ summary:focus-visible,
   border-radius: 7px;
   background: rgba(202, 255, 58, 0.09);
   color: #bde947;
-  font-size: 9px;
+  font-size: 11px;
   font-style: normal;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
@@ -942,7 +955,7 @@ summary:focus-visible,
 }
 .arena-market > span {
   color: var(--lime);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1031,8 +1044,8 @@ summary:focus-visible,
   border: 1px solid var(--line);
   border-radius: 999px;
   background: rgba(7, 10, 8, 0.62);
-  color: #9ca697;
-  font-size: 9px;
+  color: var(--muted);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   text-align: center;
@@ -1041,18 +1054,18 @@ summary:focus-visible,
 .gacha-arena .artifact-stage-copy p {
   margin: 0;
   color: var(--lime);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 .arena-gesture > strong,
 .gacha-arena .artifact-stage-copy strong {
-  font-size: 11px;
+  font-size: 12px;
 }
 .gacha-arena .artifact-stage-copy small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 .gacha-shell > .pull-command {
   min-height: 650px;
@@ -1551,8 +1564,8 @@ summary:focus-visible,
   position: absolute;
   top: 28px;
   right: 27px;
-  color: #6d7669;
-  font-size: 10px;
+  color: var(--subtle);
+  font-size: 11px;
   font-weight: 850;
   letter-spacing: 0.12em;
 }
@@ -1566,7 +1579,7 @@ summary:focus-visible,
   max-width: 540px;
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.65;
 }
 .how-outcomes {
@@ -1613,7 +1626,7 @@ summary:focus-visible,
 .how-outcomes article span,
 .how-outcomes > small {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.55;
 }
 .how-outcomes > small {
@@ -1647,7 +1660,7 @@ summary:focus-visible,
 }
 .how-ledger span {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
 }
 .how-currency-note {
@@ -1671,8 +1684,8 @@ summary:focus-visible,
 .how-currency-note p {
   max-width: 770px;
   margin: 6px 0 0;
-  color: #a9b4a2;
-  font-size: 13px;
+  color: var(--muted);
+  font-size: 14px;
   line-height: 1.6;
 }
 .support-eyebrow {
@@ -1702,7 +1715,7 @@ summary:focus-visible,
 .support-market span,
 .support-market p {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 .support-market h2 {
   margin: 8px 0;
@@ -1727,7 +1740,7 @@ summary:focus-visible,
   border: 0;
   background: none;
   color: var(--lime);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
 }
 .support-market button svg,
@@ -1783,7 +1796,7 @@ summary:focus-visible,
   display: block;
   margin-top: 22px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 .activity-summary strong,
 .reward-stat strong {
@@ -1813,7 +1826,7 @@ summary:focus-visible,
 }
 .activity-list span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .activity-list h2 {
   margin: 4px 0 6px;
@@ -1824,8 +1837,8 @@ summary:focus-visible,
   display: flex;
   align-items: center;
   gap: 4px;
-  color: #82907a;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .activity-list small svg {
   width: 11px;
@@ -1850,7 +1863,7 @@ summary:focus-visible,
   right: 52px;
   top: 15px;
   color: var(--lime);
-  font-size: 9px;
+  font-size: 11px;
   font-style: normal;
   font-weight: 800;
   text-transform: uppercase;
@@ -1873,7 +1886,7 @@ summary:focus-visible,
 .backer-overview span {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 .backer-overview strong {
   display: block;
@@ -1888,13 +1901,25 @@ summary:focus-visible,
   color: var(--lime);
 }
 .backer-overview div button {
+  min-height: 40px;
   margin-top: 12px;
-  padding: 0;
+  margin-inline-start: -8px;
+  padding-inline: 8px;
   border: 0;
+  border-radius: 9px;
   background: transparent;
   color: var(--lime);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
+  transition-property: color, background-color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+.backer-overview div button:hover {
+  background: oklch(0.91 0.22 112 / 0.08);
+}
+.backer-overview div button:active {
+  transform: scale(0.96);
 }
 .deposit-action {
   display: flex;
@@ -1938,13 +1963,13 @@ summary:focus-visible,
   border-radius: 4px;
   background: var(--lime);
   color: #0b0d08;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 850;
 }
 .position-management > div > p {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .position-management h2 {
   margin: 4px 0 8px;
@@ -1952,8 +1977,8 @@ summary:focus-visible,
   letter-spacing: -0.04em;
 }
 .position-pool {
-  color: #95a08d;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .position-management dl {
   display: grid;
@@ -1962,7 +1987,7 @@ summary:focus-visible,
 }
 .position-management dt {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
@@ -1982,7 +2007,7 @@ summary:focus-visible,
   border-radius: 7px;
   background: transparent;
   color: #c7d0c2;
-  font-size: 10px;
+  font-size: 12px;
 }
 .backer-tip {
   display: flex;
@@ -2004,7 +2029,7 @@ summary:focus-visible,
 .backer-tip p {
   margin: 0;
   color: #c2ae7a;
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
@@ -2028,7 +2053,7 @@ summary:focus-visible,
 .reward-spotlight p {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .reward-spotlight strong {
   display: block;
@@ -2037,7 +2062,7 @@ summary:focus-visible,
   letter-spacing: -0.08em;
 }
 .reward-spotlight span {
-  color: #bbc5b6;
+  color: var(--muted);
   font-size: 12px;
 }
 .reward-orb {
@@ -2061,7 +2086,7 @@ summary:focus-visible,
 }
 .reward-orb small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .reward-spotlight button {
   margin: 0 0 0 auto;
@@ -2073,7 +2098,7 @@ summary:focus-visible,
   display: block;
   margin-top: 5px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .reward-rules {
   display: flex;

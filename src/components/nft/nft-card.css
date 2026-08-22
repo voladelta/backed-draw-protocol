@@ -55,6 +55,17 @@
   cursor: grabbing;
 }
 
+.draw-card.is-interactive:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 4px;
+}
+
+@media (forced-colors: active) {
+  .draw-card.is-interactive:focus-visible {
+    outline-color: CanvasText;
+  }
+}
+
 .draw-card--stacked {
   z-index: calc(40 - var(--stack-index));
   transform: translate3d(calc(var(--stack-index) * 1.7px), calc(var(--stack-index) * 5px), 0)

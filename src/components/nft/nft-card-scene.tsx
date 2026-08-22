@@ -5,7 +5,9 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type Ref,
 } from "react"
 import { spinAudio } from "@/audio/spin-audio"
 import { deckOrder, resolveDeckRelease, wrapIndex } from "@/components/nft/deck-motion"
@@ -179,6 +181,8 @@ type TradingCardProps = {
   onPointerUp?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onPointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onPointerLeave?: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void
+  elementRef?: Ref<HTMLDivElement>
 }
 
 function TradingCard({
@@ -195,6 +199,8 @@ function TradingCard({
   onPointerUp,
   onPointerCancel,
   onPointerLeave,
+  onKeyDown,
+  elementRef,
 }: TradingCardProps) {
   const style: CardCssProperties = {
     "--accent": accent,
@@ -212,6 +218,7 @@ function TradingCard({
 
   return (
     <div
+      ref={elementRef}
       className={`draw-card ${faceUp ? "is-face-up" : "is-face-down"} ${interactive ? "is-interactive" : ""} ${className}`}
       style={style}
       onPointerDown={onPointerDown}
@@ -219,8 +226,18 @@ function TradingCard({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onPointerLeave={onPointerLeave}
-      aria-label={interactive ? `${position.name} collectible card` : undefined}
+      onKeyDown={onKeyDown}
+      aria-label={
+        interactive
+          ? faceUp
+            ? `Hide details for ${position.name}`
+            : "Reveal the top collectible card"
+          : undefined
+      }
       aria-hidden={interactive ? undefined : true}
+      aria-pressed={interactive ? faceUp : undefined}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
     >
       <div className="draw-card__rotator">
         <CardBack hidden={faceUp} />
@@ -251,6 +268,8 @@ export function NftCardScene({
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastCycleRequestRef = useRef(0)
   const revealAnnouncedRef = useRef(false)
+  const activeCardRef = useRef<HTMLDivElement>(null)
+  const restoreCardFocusRef = useRef(false)
 
   const positions = market.positions
   const selectedPosition =
@@ -326,6 +345,7 @@ export function NftCardScene({
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (!canInspect || throwingRef.current) return
+      event.currentTarget.focus()
       event.currentTarget.setPointerCapture(event.pointerId)
       dragRef.current = {
         pointerId: event.pointerId,
@@ -392,6 +412,13 @@ export function NftCardScene({
     lastCycleRequestRef.current = cycleRequest.id
     throwCard(cycleRequest.direction)
   }, [cycleRequest, throwCard])
+
+  useEffect(() => {
+    if (!restoreCardFocusRef.current) return undefined
+    restoreCardFocusRef.current = false
+    const frame = window.requestAnimationFrame(() => activeCardRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeIndex])
 
   useEffect(() => {
     if (stage === "drawing") {
@@ -483,12 +510,22 @@ export function NftCardScene({
               stackIndex={0}
               dragX={dragX}
               interactive={canInspect}
+              elementRef={activeCardRef}
               className={`${throwDirection ? `is-throwing-${throwDirection < 0 ? "left" : "right"}` : ""} ${dragRef.current ? "is-dragging" : ""}`}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={(event) => finishPointer(event)}
               onPointerCancel={(event) => finishPointer(event, true)}
               onPointerLeave={handlePointerLeave}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                  restoreCardFocusRef.current = true
+                }
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault()
+                  setFaceUp((current) => !current)
+                }
+              }}
             />
           </div>
         )}

@@ -329,7 +329,7 @@ function PageFrame({
   return (
     <div className="support-page">
       <p className="support-eyebrow">{eyebrow}</p>
-      <h1>{title}</h1>
+      <h1 tabIndex={-1}>{title}</h1>
       {children}
     </div>
   )

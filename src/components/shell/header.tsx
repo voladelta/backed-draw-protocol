@@ -1,7 +1,7 @@
 import { Menu, Wallet } from "lucide-react"
 import * as stylex from "@stylexjs/stylex"
 import type { StyleXStyles } from "@stylexjs/stylex"
-import type { ReactNode } from "react"
+import { useRef, useState, type ReactNode } from "react"
 
 import { Button } from "@/components/ui/button"
 import { breakpoints, colors } from "../../styles/tokens.stylex"
@@ -100,7 +100,6 @@ const styles = stylex.create({
     width: 40,
     height: 40,
     cursor: "pointer",
-    listStyle: "none",
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 12,
@@ -110,7 +109,6 @@ const styles = stylex.create({
     backgroundColor: { default: "rgba(255,255,255,0.05)", ":hover": "rgba(255,255,255,0.1)" },
     color: colors.slate200,
     transitionProperty: "background-color, border-color, color",
-    "::-webkit-details-marker": { display: "none" },
   },
   mobileMenu: {
     position: "absolute",
@@ -178,6 +176,9 @@ export function Header({
   walletSlot,
   style,
 }: HeaderProps) {
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const mobileTriggerRef = useRef<HTMLButtonElement>(null)
+
   return (
     <header {...stylex.props(styles.header, style)}>
       <div {...stylex.props(styles.inner)}>
@@ -216,41 +217,61 @@ export function Header({
           )}
         </div>
 
-        <details {...stylex.props(styles.mobileNav)}>
-          <summary {...stylex.props(styles.mobileTrigger)}>
+        <div
+          {...stylex.props(styles.mobileNav)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && mobileOpen) {
+              setMobileOpen(false)
+              mobileTriggerRef.current?.focus()
+            }
+          }}
+        >
+          <button
+            aria-controls="mobile-navigation"
+            aria-expanded={mobileOpen}
+            onClick={() => setMobileOpen((open) => !open)}
+            ref={mobileTriggerRef}
+            type="button"
+            {...stylex.props(styles.mobileTrigger)}
+          >
             <Menu aria-hidden {...stylex.props(styles.icon20)} />
-            <span {...stylex.props(styles.visuallyHidden)}>Open navigation</span>
-          </summary>
-          <div {...stylex.props(styles.mobileMenu)}>
-            <nav aria-label="Mobile navigation" {...stylex.props(styles.mobileMenuNav)}>
-              {navigation.map((item) => (
-                <a
-                  {...stylex.props(
-                    styles.mobileLink,
-                    item.active ? styles.mobileLinkActive : styles.mobileLinkIdle,
-                  )}
-                  href={item.href}
-                  key={item.href}
-                  aria-current={item.active ? "page" : undefined}
-                  onClick={(event) => {
-                    if (item.onClick) {
-                      event.preventDefault()
-                      item.onClick()
-                    }
-                  }}
-                >
-                  {item.label}
-                </a>
-              ))}
-            </nav>
-            {walletSlot ?? (
-              <Button style={styles.mobileWalletButton} onClick={onConnectWallet} size="sm">
-                <Wallet aria-hidden {...stylex.props(styles.icon14)} />
-                {walletLabel}
-              </Button>
-            )}
-          </div>
-        </details>
+            <span {...stylex.props(styles.visuallyHidden)}>
+              {mobileOpen ? "Close navigation" : "Open navigation"}
+            </span>
+          </button>
+          {mobileOpen ? (
+            <div id="mobile-navigation" {...stylex.props(styles.mobileMenu)}>
+              <nav aria-label="Mobile navigation" {...stylex.props(styles.mobileMenuNav)}>
+                {navigation.map((item) => (
+                  <a
+                    {...stylex.props(
+                      styles.mobileLink,
+                      item.active ? styles.mobileLinkActive : styles.mobileLinkIdle,
+                    )}
+                    href={item.href}
+                    key={item.href}
+                    aria-current={item.active ? "page" : undefined}
+                    onClick={(event) => {
+                      setMobileOpen(false)
+                      if (item.onClick) {
+                        event.preventDefault()
+                        item.onClick()
+                      }
+                    }}
+                  >
+                    {item.label}
+                  </a>
+                ))}
+              </nav>
+              {walletSlot ?? (
+                <Button style={styles.mobileWalletButton} onClick={onConnectWallet} size="sm">
+                  <Wallet aria-hidden {...stylex.props(styles.icon14)} />
+                  {walletLabel}
+                </Button>
+              )}
+            </div>
+          ) : null}
+        </div>
       </div>
     </header>
   )

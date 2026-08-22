@@ -73,7 +73,7 @@ export function PullExperience(props: PullExperienceProps) {
 
   return (
     <div className="gacha-page">
-      <h1 {...stylex.props(accessibilityStyles.visuallyHidden)}>
+      <h1 tabIndex={-1} {...stylex.props(accessibilityStyles.visuallyHidden)}>
         Pull a collectible from {props.market.name}
       </h1>
       <PoolTabs activeMarketId={props.market.id} onMarketChange={props.onMarketChange} />
@@ -257,9 +257,7 @@ function StageArtifact({
               cycleCard(1)
             }
           }}
-          onPointerDown={(event) => event.currentTarget.focus()}
           role={stage === "configure" ? "group" : undefined}
-          tabIndex={stage === "configure" ? 0 : -1}
         >
           <Suspense fallback={<div className="artifact-canvas-fallback" />}>
             <NftCardScene

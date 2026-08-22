@@ -7,6 +7,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router"
+import { useEffect } from "react"
 import { AppShell } from "@/components/shell"
 import { PullExperience } from "@/components/pull/pull-experience"
 import {
@@ -19,6 +20,15 @@ import {
 import { WalletButton } from "@/components/web3/wallet-button"
 import { marketForPoolSelection } from "@/data/pool-selection"
 import { useProtocolStore } from "@/store/use-protocol-store"
+
+const routeTitles: Record<string, string> = {
+  "/": "Pull",
+  "/pools": "Pools",
+  "/activity": "Activity",
+  "/backer": "Backer",
+  "/rewards": "Rewards",
+  "/how-it-works": "How it works",
+}
 
 function RootLayout() {
   const navigate = useNavigate()
@@ -50,6 +60,15 @@ function RootLayout() {
       onClick: () => navigate({ to: "/how-it-works" }),
     },
   ]
+
+  useEffect(() => {
+    document.title = `${routeTitles[pathname] ?? "Draw protocol"} · Backed`
+    const frame = window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("#main-content h1")?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [pathname])
+
   return (
     <AppShell navigation={nav} walletSlot={<WalletButton />}>
       <Outlet />

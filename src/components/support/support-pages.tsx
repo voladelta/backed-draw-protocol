@@ -143,7 +143,7 @@ export function BackerPage({ onPull }: { onPull: () => void }) {
           </div>
         </dl>
         <div className="position-actions">
-          <button type="button">Manage backing</button>
+          <button type="button">Manage</button>
           <button type="button">Withdraw</button>
           <button type="button">Redeem</button>
         </div>

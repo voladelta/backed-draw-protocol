@@ -2629,6 +2629,10 @@ summary:focus-visible,
   transition-duration: 150ms;
   transition-timing-function: ease-out;
 }
+.support-market button {
+  margin-inline-start: -8px;
+  padding-inline: 8px;
+}
 .support-market button:hover,
 .info-banner button:hover,
 .backer-tip button:hover,

@@ -793,7 +793,11 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
             reduction = oldBacking - newBacking;
             backingLiability -= reduction;
         }
-        _considerCrown(positionId, newBacking);
+        if (crownPositionId == positionId && newBacking < oldBacking) {
+            _recomputeCrown();
+        } else {
+            _considerCrown(positionId, newBacking);
+        }
         emit BackingChanged(positionId, oldBacking, newBacking);
     }
 
@@ -901,11 +905,20 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
     function _ensureCrown() private {
         if (crownPositionId != 0 || activePositionCount == 0) return;
+        _recomputeCrown();
+    }
+
+    function _recomputeCrown() private {
+        uint256 previousPositionId = crownPositionId;
+        uint256 positionId;
+        if (activePositionCount != 0) positionId = _bestCrownCandidate();
+        if (positionId != previousPositionId) _releaseCrown(previousPositionId, positionId);
+    }
+
+    function _bestCrownCandidate() private view returns (uint256 positionId) {
         uint256 candidate = _crownBackingTree[1];
         uint32 slot = type(uint32).max - uint32(candidate);
-        uint256 positionId = positionAtSlot[slot];
-        crownPositionId = positionId;
-        emit CrownChanged(0, positionId, 0);
+        positionId = positionAtSlot[slot];
     }
 
     function _setCrownCandidate(uint32 slot, uint256 backing) private {

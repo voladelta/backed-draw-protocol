@@ -65,7 +65,11 @@ vault balance >=
   + referral, insurance, buyback and treasury revenue
 ```
 
-Fee-on-transfer settlement assets are rejected through exact balance-delta checks. Selection zeroes the weighted-tree leaf and freezes the `PositionNFT`; settlement burns it before releasing funds or the underlying NFT. The frozen pull receipt remains as the historical settlement proof.
+Fee-on-transfer and rebasing settlement assets are rejected through exact balance-delta checks. Deposits must increase the vault balance by the accounted amount. Releases must decrease the vault balance and increase the recipient balance by exactly that amount; validating both sides preserves exact user payouts as well as vault solvency under the protocol's non-taxing, non-rebasing supported-token invariant. A failed check reverts the transfer and its associated liability update atomically.
+
+The Crown takeover threshold is 110% of the incumbent's backing. If the incumbent reduces its backing, succession is recomputed from the active-position backing tree so a reduced Crown cannot remain below another active position. Highest backing wins; equal backing is resolved by the lower tree slot. Selected, staged and removed positions are not succession candidates.
+
+Selection zeroes the weighted-tree leaf and freezes the `PositionNFT`; settlement burns it before releasing funds or the underlying NFT. The frozen pull receipt remains as the historical settlement proof.
 
 Revealed settlement first converts cash payouts into owner-bound claims held by the `SettlementEngine`. A rejecting or denylisted payout recipient therefore cannot block settlement or `forceKeep`; only the claim owner can retry delivery or redirect it to another receiver. `$DRAW` settlement is different: the receipt owner supplies `minDrawOut` and route data, and the `RewardController` performs the protected swap atomically. If that swap fails, the receipt and all selected-position liabilities remain unconsumed so the owner can retry or select cash.
 

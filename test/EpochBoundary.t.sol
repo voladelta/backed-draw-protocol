@@ -261,6 +261,20 @@ contract EpochBoundaryTest is Test {
         assertEq(_totalWeightSnapshot(), updatedWeight);
     }
 
+    function testQueuedIncumbentBackingDecreaseRecomputesCrownAtBoundary() external {
+        uint48 deadline = _startEpoch();
+        vm.prank(carol);
+        market.requestBackingChange(3, 150 ether);
+
+        _finalizeOrdersAfterDeadline(deadline);
+        coordinator.advanceEpochBoundary(1);
+
+        assertEq(market.crownPositionId(), 2);
+        assertEq(market.settlementClaims(carol), 250 ether);
+        assertEq(market.activePositionCount(), 3);
+        assertEq(market.backingLiability(), 450 ether);
+    }
+
     function testStagedDepositActivatesBeforeNextSnapshotWhenCapacityAllows() external {
         uint48 deadline = _startEpoch();
         _deposit(dave, 4, 50 ether);

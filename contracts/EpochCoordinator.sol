@@ -28,10 +28,13 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     error InvalidPayer(address payer, address caller);
     error ZeroAddress();
     error InvalidRefundReceiver();
+    error InsufficientResolutionGas();
 
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
     bytes32 public constant ROUTER_ROLE = keccak256("ROUTER_ROLE");
+    uint256 public constant RESOLUTION_CALL_GAS = 2_000_000;
+    uint256 public constant RESOLUTION_GAS_RESERVE = 300_000;
 
     struct Epoch {
         uint256 id;
@@ -233,12 +236,15 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
                 continue;
             }
             uint128 quotedPrice = unitPrice.toUint128();
+            if (gasleft() < RESOLUTION_CALL_GAS + RESOLUTION_GAS_RESERVE) {
+                revert InsufficientResolutionGas();
+            }
             order.escrowRemaining -= quotedPrice;
             escrowLiability -= unitPrice;
             uint256 randomValue = uint256(
                 keccak256(abi.encode(epoch.randomSeed, epoch.id, epoch.totalResolved, epoch.orderCursor))
             );
-            try market.resolveDraw(
+            try market.resolveDraw{ gas: RESOLUTION_CALL_GAS }(
                 epoch.id, order.buyer, order.receiver, quotedPrice, order.referrer, randomValue
             ) returns (
                 uint256 receiptId, uint256 positionId, uint128 backing
@@ -247,13 +253,14 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
                 epoch.totalResolved++;
                 emit DrawResolved(epoch.id, receiptId, positionId, unitPrice, backing);
             } catch (bytes memory reason) {
-                if (!_isIneligibleReceiver(reason, order.receiver)) {
-                    assembly ("memory-safe") {
-                        revert(add(reason, 0x20), mload(reason))
-                    }
-                }
                 order.escrowRemaining += quotedPrice;
                 escrowLiability += unitPrice;
+                if (!_isIneligibleReceiver(reason, order.receiver)) {
+                    ProtocolTypes.EpochStatus previousStatus = epoch.status;
+                    epoch.status = ProtocolTypes.EpochStatus.Refunding;
+                    emit EpochRefunding(epoch.id, previousStatus);
+                    return;
+                }
                 _refundOrder(order);
                 epoch.orderCursor++;
                 continue;
@@ -275,16 +282,14 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         ProtocolTypes.EpochStatus status = epoch.status;
         if (
             status != ProtocolTypes.EpochStatus.RandomnessRequested
-                && status != ProtocolTypes.EpochStatus.RandomnessReady
-                && status != ProtocolTypes.EpochStatus.Resolving
                 && status != ProtocolTypes.EpochStatus.Refunding
         ) {
             revert InvalidEpochState(status);
         }
-        if (block.timestamp <= uint256(epoch.randomnessRequestedAt) + randomnessTimeout) {
-            revert RandomnessNotTimedOut();
-        }
-        if (status != ProtocolTypes.EpochStatus.Refunding) {
+        if (status == ProtocolTypes.EpochStatus.RandomnessRequested) {
+            if (block.timestamp <= uint256(epoch.randomnessRequestedAt) + randomnessTimeout) {
+                revert RandomnessNotTimedOut();
+            }
             epoch.status = ProtocolTypes.EpochStatus.Refunding;
             emit EpochRefunding(epoch.id, status);
         }

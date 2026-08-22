@@ -127,6 +127,11 @@ contract ProtocolHandler is Test {
     uint256 public rewardClaimCalls;
     uint256 public revenueClaimCalls;
     uint256 public crownChallengeCalls;
+    uint256 public healthySeedCancellationRejections;
+    uint256 public resolutionFailureCalls;
+    uint256 public recoveryStepCalls;
+    uint256 public marketNFTDeferralCalls;
+    uint256 public nftClaimCalls;
     uint256 public expectedReverts;
 
     constructor(
@@ -208,7 +213,7 @@ contract ProtocolHandler is Test {
         requestPull(2, true);
         progressEpoch(41, false);
         progressEpoch(41, false);
-        progressEpoch(41, false);
+        progressEpoch(41, true);
         rewards.setFailures(false, false, true);
         attemptDrawFailure(0);
         rewards.setFailures(false, false, false);
@@ -218,6 +223,20 @@ contract ProtocolHandler is Test {
             claimRewards(i);
         }
         claimRevenues();
+
+        deposit(0, 50 ether);
+        requestPull(0, false);
+        requestPull(1, false);
+        progressEpoch(53, false);
+        progressEpoch(53, false);
+        triggerUnexpectedResolutionFailure();
+        progressEpoch(53, false);
+        progressEpoch(53, false);
+        progressEpoch(53, false);
+
+        deferWithdrawalNFT(55 ether);
+        claimDeferredNFT(0);
+        deferWithdrawalNFT(65 ether);
     }
 
     function deposit(uint256 actorSeed, uint256 backingSeed) public {
@@ -310,14 +329,61 @@ contract ProtocolHandler is Test {
             status == ProtocolTypes.EpochStatus.RandomnessReady
                 || status == ProtocolTypes.EpochStatus.Resolving
         ) {
+            if (cancel) {
+                vm.warp(block.timestamp + coordinator.randomnessTimeout() + 1);
+                (bool ok, bytes memory reason) = address(coordinator)
+                    .call(abi.encodeCall(EpochCoordinator.cancelTimedOutEpoch, (uint32(1))));
+                assertFalse(ok, "healthy seeded epoch was cancellable");
+                assertEq(reason, abi.encodeWithSelector(EpochCoordinator.InvalidEpochState.selector, status));
+                healthySeedCancellationRejections++;
+                expectedReverts++;
+            }
             coordinator.resolveEpoch(1);
             resolutionCalls++;
+            return;
+        }
+        if (status == ProtocolTypes.EpochStatus.Refunding) {
+            coordinator.cancelTimedOutEpoch(1);
+            recoveryStepCalls++;
             return;
         }
         if (status == ProtocolTypes.EpochStatus.Finalizing || status == ProtocolTypes.EpochStatus.Cancelling)
         {
             coordinator.advanceEpochBoundary(market.MAX_BOUNDARY_BATCH());
         }
+    }
+
+    function triggerUnexpectedResolutionFailure() public {
+        (uint256 epochId, ProtocolTypes.EpochStatus status,,,, uint32 orderCursor,,,,,,,) =
+            coordinator.epoch();
+        if (
+            (status != ProtocolTypes.EpochStatus.RandomnessReady
+                    && status != ProtocolTypes.EpochStatus.Resolving) || market.activePositionCount() == 0
+        ) return;
+        ProtocolTypes.PullOrder memory order = coordinator.orderAt(epochId, orderCursor);
+        uint256 price = market.currentPullPrice();
+        if (
+            order.resolvedCount == order.drawCount || block.timestamp > order.deadline
+                || price > order.maxUnitPrice || price > order.escrowRemaining
+        ) return;
+
+        uint256 escrowBefore = coordinator.escrowLiability();
+        uint256 refundBefore = coordinator.refundLiability();
+        uint32 marketCountBefore = market.activePositionCount();
+        vm.mockCallRevert(
+            address(market),
+            abi.encodeWithSelector(DrawMarket.resolveDraw.selector),
+            abi.encodeWithSignature("InvariantResolveFailure()")
+        );
+        coordinator.resolveEpoch(1);
+        vm.clearMockedCalls();
+
+        (, ProtocolTypes.EpochStatus afterStatus,,,,,,,,,,,) = coordinator.epoch();
+        assertEq(uint8(afterStatus), uint8(ProtocolTypes.EpochStatus.Refunding));
+        assertEq(coordinator.escrowLiability(), escrowBefore);
+        assertEq(coordinator.refundLiability(), refundBefore);
+        assertEq(market.activePositionCount(), marketCountBefore);
+        resolutionFailureCalls++;
     }
 
     function settleReceipt(uint256 receiptSeed, uint256 choiceSeed) public {
@@ -387,15 +453,43 @@ contract ProtocolHandler is Test {
     }
 
     function claimDeferredNFT(uint256 tokenSeed) public {
-        uint256 tokenId = _pendingNFTToken(tokenSeed);
+        (uint256 tokenId, bool marketClaim) = _pendingNFTToken(tokenSeed);
         if (tokenId == 0) return;
-        address owner = engine.pendingNFTClaims(address(collection), tokenId);
+        address owner = marketClaim
+            ? market.pendingNFTClaims(address(collection), tokenId)
+            : engine.pendingNFTClaims(address(collection), tokenId);
         if (owner == address(0)) return;
         rejectingReceiver.setRejects(false);
         vm.prank(owner);
-        engine.claimNFT(address(collection), tokenId, _actors[3]);
-        assertEq(engine.pendingNFTClaims(address(collection), tokenId), address(0));
+        if (marketClaim) {
+            market.claimNFT(address(collection), tokenId, _actors[3]);
+            assertEq(market.pendingNFTClaims(address(collection), tokenId), address(0));
+        } else {
+            engine.claimNFT(address(collection), tokenId, _actors[3]);
+            assertEq(engine.pendingNFTClaims(address(collection), tokenId), address(0));
+        }
         receiverFailureCalls++;
+        nftClaimCalls++;
+    }
+
+    function deferWithdrawalNFT(uint256 backingSeed) public {
+        if (market.nextPositionId() > MAX_POSITIONS || market.boundaryActive()) return;
+        if (!market.epochLocked() && market.activePositionCount() >= market.maxActivePositions()) return;
+        uint128 backing = (MIN_BACKING + backingSeed % (MAX_BACKING - MIN_BACKING + 1)).toUint128();
+        uint256 tokenId = nextTokenId++;
+        collection.mint(address(rejectingReceiver), tokenId);
+        vm.startPrank(address(rejectingReceiver));
+        collection.approve(address(vault), tokenId);
+        market.depositPosition(address(collection), tokenId, backing, address(rejectingReceiver));
+        rejectingReceiver.setRejects(true);
+        uint256 positionId = market.nextPositionId() - 1;
+        market.requestWithdrawal(positionId, address(rejectingReceiver));
+        vm.stopPrank();
+        assertEq(market.pendingNFTClaims(address(collection), tokenId), address(rejectingReceiver));
+        depositCalls++;
+        withdrawalRequestCalls++;
+        receiverFailureCalls++;
+        marketNFTDeferralCalls++;
     }
 
     function claimClaims(uint256 actorSeed) public {
@@ -581,17 +675,23 @@ contract ProtocolHandler is Test {
         }
     }
 
-    function _pendingNFTToken(uint256 seed) private view returns (uint256 tokenId) {
+    function _pendingNFTToken(uint256 seed) private view returns (uint256 tokenId, bool marketClaim) {
         uint256 count;
         for (uint256 i = 1; i < nextTokenId; ++i) {
             if (engine.pendingNFTClaims(address(collection), i) != address(0)) count++;
+            if (market.pendingNFTClaims(address(collection), i) != address(0)) count++;
         }
-        if (count == 0) return 0;
+        if (count == 0) return (0, false);
         uint256 target = seed % count;
         for (uint256 i = 1; i < nextTokenId; ++i) {
-            if (engine.pendingNFTClaims(address(collection), i) == address(0)) continue;
-            if (target == 0) return i;
-            target--;
+            if (engine.pendingNFTClaims(address(collection), i) != address(0)) {
+                if (target == 0) return (i, false);
+                target--;
+            }
+            if (market.pendingNFTClaims(address(collection), i) != address(0)) {
+                if (target == 0) return (i, true);
+                target--;
+            }
         }
     }
 
@@ -730,7 +830,7 @@ contract ProtocolInvariantTest is StdInvariant, Test {
         );
         handler.bootstrap();
 
-        bytes4[] memory selectors = new bytes4[](16);
+        bytes4[] memory selectors = new bytes4[](18);
         selectors[0] = ProtocolHandler.deposit.selector;
         selectors[1] = ProtocolHandler.changeBacking.selector;
         selectors[2] = ProtocolHandler.requestWithdrawal.selector;
@@ -747,6 +847,8 @@ contract ProtocolInvariantTest is StdInvariant, Test {
         selectors[13] = ProtocolHandler.claimRewards.selector;
         selectors[14] = ProtocolHandler.claimRevenues.selector;
         selectors[15] = ProtocolHandler.challengeCrown.selector;
+        selectors[16] = ProtocolHandler.triggerUnexpectedResolutionFailure.selector;
+        selectors[17] = ProtocolHandler.deferWithdrawalNFT.selector;
         targetSelector(FuzzSelector({ addr: address(handler), selectors: selectors }));
         targetContract(address(handler));
     }
@@ -854,10 +956,23 @@ contract ProtocolInvariantTest is StdInvariant, Test {
         }
 
         for (uint256 tokenId = 1; tokenId < handler.nextTokenId(); ++tokenId) {
-            address claimOwner = engine.pendingNFTClaims(address(collection), tokenId);
-            if (claimOwner == address(0)) continue;
-            assertEq(collection.ownerOf(tokenId), address(vault));
-            assertEq(liveCustodyPosition[tokenId], 0, "NFT both claimable and backing a live position");
+            address engineClaimOwner = engine.pendingNFTClaims(address(collection), tokenId);
+            address marketClaimOwner = market.pendingNFTClaims(address(collection), tokenId);
+            assertTrue(
+                engineClaimOwner == address(0) || marketClaimOwner == address(0),
+                "NFT credited in both claim systems"
+            );
+            bool hasClaim = engineClaimOwner != address(0) || marketClaimOwner != address(0);
+            if (hasClaim) {
+                assertEq(collection.ownerOf(tokenId), address(vault));
+                assertEq(liveCustodyPosition[tokenId], 0, "NFT both claimable and backing a live position");
+            }
+            bool vaultOwned = collection.ownerOf(tokenId) == address(vault);
+            assertEq(
+                vaultOwned,
+                liveCustodyPosition[tokenId] != 0 || hasClaim,
+                "vault-owned NFT has no live position or claim owner"
+            );
         }
     }
 
@@ -954,6 +1069,11 @@ contract ProtocolInvariantTest is StdInvariant, Test {
         assertGt(handler.rewardClaimCalls(), 0, "reward claim");
         assertGt(handler.revenueClaimCalls(), 0, "revenue claim");
         assertGt(handler.crownChallengeCalls(), 0, "Crown challenge");
+        assertGt(handler.healthySeedCancellationRejections(), 0, "healthy seeded cancellation rejection");
+        assertGt(handler.resolutionFailureCalls(), 0, "resolution failure");
+        assertGt(handler.recoveryStepCalls(), 0, "incremental recovery");
+        assertGt(handler.marketNFTDeferralCalls(), 0, "market NFT deferral");
+        assertGt(handler.nftClaimCalls(), 0, "NFT claim");
         assertGt(handler.expectedReverts(), 0, "modeled revert");
     }
 

@@ -801,6 +801,21 @@ If randomness is not delivered before the immutable timeout:
 
 Do not allow governance or a keeper to insert a replacement seed.
 
+Once a valid seed is accepted, it is binding. The randomness-request timeout no longer permits
+cancellation from `RandomnessReady` or `Resolving`, so no buyer or third party can compare the known
+result with a refund before deciding how to progress the epoch. Resolution remains permissionless after
+the timeout.
+
+An unexpected atomic market resolution failure commits the epoch to irreversible, permissionless
+`Refunding` recovery in that same call. The coordinator restores the failed attempt's escrow debit before
+the transition, preserves selections completed by earlier calls, and refunds only each unresolved suffix.
+Recovery processes an explicit order budget per call, then unlocks the epoch and processes the ordinary
+boundary queues. Resolution cannot resume from `Refunding`.
+
+Every market resolution attempt receives the same protocol-defined gas stipend. The coordinator rejects a
+caller that cannot also retain the recovery reserve, before debiting escrow or calling the market. A caller
+therefore cannot manufacture `Refunding` by supplying less gas than another caller would have provided.
+
 ## Finality tiers
 
 Robinhood Chain offers fast sequencer confirmations, followed by Ethereum posting and eventual Ethereum finality. High-value markets can require stronger confirmation before requesting randomness or recognizing deposits.

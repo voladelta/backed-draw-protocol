@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC721 } from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import { ProtocolRegistry } from "../contracts/ProtocolRegistry.sol";
 import { SwapAndPullRouter } from "../contracts/SwapAndPullRouter.sol";
@@ -12,6 +13,62 @@ import { ProtocolTypes } from "../contracts/types/ProtocolTypes.sol";
 import { MockERC20 } from "./mocks/MockERC20.sol";
 import { MockRewardController } from "./mocks/MockRewardController.sol";
 import { MockTaxedERC20 } from "./mocks/MockTaxedERC20.sol";
+
+contract RouterVaultSafetyAdversarialSwapAdapter {
+    uint256 public inputSpent;
+    uint256 public outputDelivered;
+    uint256 public amountReported;
+
+    function configure(uint256 inputSpent_, uint256 outputDelivered_, uint256 amountReported_) external {
+        inputSpent = inputSpent_;
+        outputDelivered = outputDelivered_;
+        amountReported = amountReported_;
+    }
+
+    function swapExactOutput(
+        address inputAsset,
+        address outputAsset,
+        uint256,
+        uint256,
+        address receiver,
+        bytes calldata
+    ) external returns (uint256 amountIn) {
+        if (inputSpent != 0) {
+            if (!IERC20(inputAsset).transferFrom(msg.sender, address(this), inputSpent)) {
+                revert();
+            }
+        }
+        if (outputDelivered != 0 && !IERC20(outputAsset).transfer(receiver, outputDelivered)) revert();
+        amountIn = amountReported;
+    }
+
+    function swapExactInput(
+        address inputAsset,
+        address outputAsset,
+        uint256,
+        uint256,
+        address receiver,
+        bytes calldata
+    ) external returns (uint256 amountOut) {
+        if (inputSpent != 0) {
+            if (!IERC20(inputAsset).transferFrom(msg.sender, address(this), inputSpent)) {
+                revert();
+            }
+        }
+        if (outputDelivered != 0 && !IERC20(outputAsset).transfer(receiver, outputDelivered)) revert();
+        amountOut = amountReported;
+    }
+}
+
+contract RouterVaultSafetyStickyAllowanceERC20 is ERC20 {
+    constructor() ERC20("Sticky Allowance", "STICKY") { }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function _spendAllowance(address, address, uint256) internal override { }
+}
 
 contract RouterVaultSafetyCounterfeitMarket {
     IERC20 internal immutable _settlementAsset;
@@ -140,6 +197,104 @@ contract RouterVaultSafetyTest is Test {
         assertEq(asset.balanceOf(address(router)), 0);
         assertEq(asset.balanceOf(address(counterfeitMarket)), 60 ether);
         assertEq(counterfeitMarket.requestCount(), 1);
+    }
+
+    function testRouterMeasuresExactOutputInputInsteadOfTrustingAdapterReport() external {
+        (MockERC20 input, RouterVaultSafetyAdversarialSwapAdapter adapter, SwapAndPullRouter swapRouter) =
+            _swapRouter();
+        adapter.configure(40 ether, 60 ether, 99 ether);
+
+        vm.prank(buyer);
+        (uint256 orderIndex, uint256 amountIn) = swapRouter.swapAndPull(
+            address(counterfeitMarket), address(input), 100 ether, _order(60 ether), ""
+        );
+
+        assertEq(orderIndex, 42);
+        assertEq(amountIn, 40 ether);
+        assertEq(input.balanceOf(buyer), 60 ether);
+        assertEq(input.balanceOf(address(adapter)), 40 ether);
+        assertEq(input.allowance(address(swapRouter), address(adapter)), 0);
+    }
+
+    function testRouterRejectsExactOutputUnderDeliveryWithSpecificBalanceMismatch() external {
+        (MockERC20 input, RouterVaultSafetyAdversarialSwapAdapter adapter, SwapAndPullRouter swapRouter) =
+            _swapRouter();
+        adapter.configure(40 ether, 59 ether, 40 ether);
+
+        vm.prank(buyer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SwapAndPullRouter.OutputAmountMismatch.selector, address(asset), 60 ether, 59 ether
+            )
+        );
+        swapRouter.swapAndPull(address(counterfeitMarket), address(input), 100 ether, _order(60 ether), "");
+
+        assertEq(input.balanceOf(buyer), 100 ether);
+        assertEq(asset.balanceOf(address(adapter)), 100 ether);
+        assertEq(counterfeitMarket.requestCount(), 0);
+    }
+
+    function testConvertPayoutRejectsAdapterReportedOutputWhenReceiverIsUnderpaid() external {
+        (
+            MockERC20 input,
+            MockERC20 output,
+            RouterVaultSafetyAdversarialSwapAdapter adapter,
+            SwapAndPullRouter swapRouter
+        ) = _payoutRouter();
+        adapter.configure(100 ether, 79 ether, 100 ether);
+
+        vm.prank(buyer);
+        vm.expectRevert(
+            abi.encodeWithSelector(SwapAndPullRouter.SlippageExceeded.selector, 79 ether, 80 ether)
+        );
+        swapRouter.convertPayout(address(input), address(output), 100 ether, 80 ether, receiver, "");
+
+        assertEq(input.balanceOf(buyer), 100 ether);
+        assertEq(input.balanceOf(address(adapter)), 0);
+        assertEq(output.balanceOf(receiver), 0);
+    }
+
+    function testConvertPayoutRejectsPartialExactInputConsumption() external {
+        (
+            MockERC20 input,
+            MockERC20 output,
+            RouterVaultSafetyAdversarialSwapAdapter adapter,
+            SwapAndPullRouter swapRouter
+        ) = _payoutRouter();
+        adapter.configure(40 ether, 80 ether, 80 ether);
+
+        vm.prank(buyer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SwapAndPullRouter.InputAmountMismatch.selector, address(input), 100 ether, 40 ether
+            )
+        );
+        swapRouter.convertPayout(address(input), address(output), 100 ether, 80 ether, receiver, "");
+
+        assertEq(input.balanceOf(buyer), 100 ether);
+        assertEq(input.balanceOf(address(adapter)), 0);
+        assertEq(output.balanceOf(receiver), 0);
+    }
+
+    function testConvertPayoutClearsAllowanceEvenWhenTokenDoesNotSpendIt() external {
+        RouterVaultSafetyStickyAllowanceERC20 input = new RouterVaultSafetyStickyAllowanceERC20();
+        MockERC20 output = new MockERC20("Output", "OUT", 18);
+        RouterVaultSafetyAdversarialSwapAdapter adapter = new RouterVaultSafetyAdversarialSwapAdapter();
+        SwapAndPullRouter swapRouter =
+            new SwapAndPullRouter(governor, address(asset), address(adapter), address(registry));
+        input.mint(buyer, 100 ether);
+        output.mint(address(adapter), 80 ether);
+        adapter.configure(100 ether, 80 ether, 80 ether);
+        vm.prank(buyer);
+        input.approve(address(swapRouter), 100 ether);
+
+        vm.prank(buyer);
+        uint256 amountOut =
+            swapRouter.convertPayout(address(input), address(output), 100 ether, 80 ether, receiver, "");
+
+        assertEq(amountOut, 80 ether);
+        assertEq(output.balanceOf(receiver), 80 ether);
+        assertEq(input.allowance(address(swapRouter), address(adapter)), 0);
     }
 
     function testReleaseNFTRevertsWhenTransferReturnsWithoutMovingOwnership() external {
@@ -278,5 +433,43 @@ contract RouterVaultSafetyTest is Test {
         collection.approve(address(vault), 1);
         vault.depositNFT(address(this), address(collection), 1);
         assertEq(collection.ownerOf(1), address(vault));
+    }
+
+    function _swapRouter()
+        private
+        returns (
+            MockERC20 input,
+            RouterVaultSafetyAdversarialSwapAdapter adapter,
+            SwapAndPullRouter swapRouter
+        )
+    {
+        input = new MockERC20("Input", "IN", 18);
+        adapter = new RouterVaultSafetyAdversarialSwapAdapter();
+        swapRouter = new SwapAndPullRouter(governor, address(input), address(adapter), address(registry));
+        vm.prank(governor);
+        registry.registerMarket(address(counterfeitMarket), 1, 1);
+        input.mint(buyer, 100 ether);
+        asset.mint(address(adapter), 100 ether);
+        vm.prank(buyer);
+        input.approve(address(swapRouter), 100 ether);
+    }
+
+    function _payoutRouter()
+        private
+        returns (
+            MockERC20 input,
+            MockERC20 output,
+            RouterVaultSafetyAdversarialSwapAdapter adapter,
+            SwapAndPullRouter swapRouter
+        )
+    {
+        input = new MockERC20("Input", "IN", 18);
+        output = new MockERC20("Output", "OUT", 18);
+        adapter = new RouterVaultSafetyAdversarialSwapAdapter();
+        swapRouter = new SwapAndPullRouter(governor, address(asset), address(adapter), address(registry));
+        input.mint(buyer, 100 ether);
+        output.mint(address(adapter), 100 ether);
+        vm.prank(buyer);
+        input.approve(address(swapRouter), 100 ether);
     }
 }

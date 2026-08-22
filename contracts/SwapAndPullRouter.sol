@@ -18,6 +18,10 @@ contract SwapAndPullRouter is AccessControl, ReentrancyGuard {
     error UnregisteredMarket(address market);
     error DeadlineExpired();
     error ExcessiveInput(uint256 actual, uint256 maximum);
+    error SlippageExceeded(uint256 actual, uint256 minimum);
+    error InputAmountMismatch(address asset, uint256 expected, uint256 actual);
+    error OutputAmountMismatch(address asset, uint256 expected, uint256 actual);
+    error AllowanceNotCleared(address asset, address spender, uint256 remaining);
     error NativeRefundFailed();
 
     bytes32 public constant ADAPTER_ADMIN_ROLE = keccak256("ADAPTER_ADMIN_ROLE");
@@ -85,10 +89,19 @@ contract SwapAndPullRouter is AccessControl, ReentrancyGuard {
         if (routedInput == settlement) {
             amountIn = order.maxTotalPrice;
         } else {
-            IERC20(routedInput).forceApprove(address(swapAdapter), maxAmountIn);
-            amountIn = swapAdapter.swapExactOutput(
+            ISwapAdapter adapter = swapAdapter;
+            uint256 inputBefore = IERC20(routedInput).balanceOf(address(this));
+            uint256 settlementBefore = IERC20(settlement).balanceOf(address(this));
+            IERC20(routedInput).forceApprove(address(adapter), maxAmountIn);
+            adapter.swapExactOutput(
                 routedInput, settlement, order.maxTotalPrice, maxAmountIn, address(this), routeData
             );
+            _clearAdapterAllowance(routedInput, address(adapter));
+            amountIn = _balanceDecrease(routedInput, address(this), inputBefore);
+            uint256 settlementReceived = _balanceIncrease(settlement, address(this), settlementBefore);
+            if (settlementReceived != order.maxTotalPrice) {
+                revert OutputAmountMismatch(settlement, order.maxTotalPrice, settlementReceived);
+            }
         }
         if (amountIn > maxAmountIn) revert ExcessiveInput(amountIn, maxAmountIn);
 
@@ -108,11 +121,42 @@ contract SwapAndPullRouter is AccessControl, ReentrancyGuard {
         bytes calldata routeData
     ) external nonReentrant returns (uint256 amountOut) {
         IERC20(inputAsset).safeTransferFrom(msg.sender, address(this), amountIn);
-        IERC20(inputAsset).forceApprove(address(swapAdapter), amountIn);
-        amountOut = swapAdapter.swapExactInput(
-            inputAsset, outputAsset, amountIn, minAmountOut, receiver, routeData
-        );
+        ISwapAdapter adapter = swapAdapter;
+        uint256 inputBefore = IERC20(inputAsset).balanceOf(address(this));
+        uint256 outputBefore = IERC20(outputAsset).balanceOf(receiver);
+        IERC20(inputAsset).forceApprove(address(adapter), amountIn);
+        adapter.swapExactInput(inputAsset, outputAsset, amountIn, minAmountOut, receiver, routeData);
+        _clearAdapterAllowance(inputAsset, address(adapter));
+        uint256 inputSpent = _balanceDecrease(inputAsset, address(this), inputBefore);
+        if (inputSpent != amountIn) revert InputAmountMismatch(inputAsset, amountIn, inputSpent);
+        amountOut = _balanceIncrease(outputAsset, receiver, outputBefore);
+        if (amountOut < minAmountOut) revert SlippageExceeded(amountOut, minAmountOut);
         emit PayoutConverted(msg.sender, inputAsset, outputAsset, amountIn, amountOut);
+    }
+
+    function _clearAdapterAllowance(address asset, address adapter) private {
+        IERC20 token = IERC20(asset);
+        token.forceApprove(adapter, 0);
+        uint256 remaining = token.allowance(address(this), adapter);
+        if (remaining != 0) revert AllowanceNotCleared(asset, adapter, remaining);
+    }
+
+    function _balanceDecrease(address asset, address account, uint256 balanceBefore)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 balanceAfter = IERC20(asset).balanceOf(account);
+        return balanceBefore >= balanceAfter ? balanceBefore - balanceAfter : 0;
+    }
+
+    function _balanceIncrease(address asset, address account, uint256 balanceBefore)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 balanceAfter = IERC20(asset).balanceOf(account);
+        return balanceAfter >= balanceBefore ? balanceAfter - balanceBefore : 0;
     }
 
     function _refundInput(address inputAsset, bool nativeInput, uint256 amount, address receiver) private {

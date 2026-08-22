@@ -1,30 +1,34 @@
 # Contract architecture
 
-The contracts implement the solvency-critical core from `SPECS.md`. Each market has exactly one ERC-20 settlement asset. Native ETH is wrapped before market entry, so ETH and USDG never share a probability tree or liability ledger.
+The contracts protect market solvency and settlement. Each market uses one ERC-20 settlement asset.
 
-OpenZeppelin Contracts is pinned to the audited `v5.7.0` release. Market instances are fixed EIP-1167 clones of a registry-approved implementation. A clone cannot change its implementation address.
+The router wraps native ETH before it enters a market. ETH and USDG never share a probability tree or liability ledger.
 
-## Ownership boundaries
+The protocol pins OpenZeppelin Contracts to version 5.7.0. Each market is a fixed EIP-1167 clone of a registry-approved implementation. A clone cannot change its implementation address.
 
-| Contract            | Source of truth                                                                           |
-| ------------------- | ----------------------------------------------------------------------------------------- |
-| `ProtocolRegistry`  | Approved assets, adapters, routers, implementation code hashes, and market creators       |
-| `MarketFactory`     | Market IDs and fixed-version market deployments                                           |
-| `DrawMarket`        | Positions, backing, weighted tree, per-position accumulators, Crown, deposit state        |
-| `EpochCoordinator`  | Pull escrow, price limits, epoch lock, randomness request, bounded resolution and refunds |
-| `SettlementEngine`  | Selected backing, pull receipts, decision state, payout claims, settlement fee waterfall  |
-| `MarketVault`       | Isolated custody for one market’s NFT inventory and settlement asset                      |
-| `PositionNFT`       | Transferable ownership of an active or staged position                                    |
-| `PullReceipt`       | Frozen revealed settlement right and historical proof after settlement                    |
-| `RewardController`  | Protected `$DRAW` purchases and per-user queued reward input                              |
-| `ReferralRegistry`  | Permanent wallet attribution and registered referral codes                                |
-| `SwapAndPullRouter` | Exact-output payment conversion, native ETH wrapping, payout conversion and refunds       |
+## Contract ownership
 
-## Immutable market economics
+| Contract            | Owns                                                                               |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `ProtocolRegistry`  | approved assets, adapters, routers, implementation code hashes and market creators |
+| `MarketFactory`     | market IDs and fixed-version market deployments                                    |
+| `DrawMarket`        | positions, backing, weighted tree, accumulators, Crown and deposit state           |
+| `EpochCoordinator`  | pull escrow, price limits, epoch lock, randomness, bounded resolution and refunds  |
+| `SettlementEngine`  | selected backing, pull receipts, decisions, payout claims and settlement revenue   |
+| `MarketVault`       | isolated NFT and settlement-asset custody for one market                           |
+| `PositionNFT`       | transferable ownership of an active or staged position                             |
+| `PullReceipt`       | revealed settlement rights and the historical proof                                |
+| `RewardController`  | protected `$DRAW` purchases and queued reward input for each user                  |
+| `ReferralRegistry`  | permanent wallet attribution and registered referral codes                         |
+| `SwapAndPullRouter` | payment conversion, native ETH wrapping, payout conversion and refunds             |
 
-`ProtocolTypes.MarketConfig` carries `markupBps`, `cashPayoutBps`, and `keepPayoutBps`. A market stores its markup and initializes its paired `SettlementEngine` with the two payout ratios. These values are immutable policy for that market, not global settlement constants and not settings governance can change after users enter.
+## Fixed market economics
 
-`MarketFactory.createMarket` applies the implementation-v1 safety bounds before deploying any component:
+`ProtocolTypes.MarketConfig` contains `markupBps`, `cashPayoutBps` and `keepPayoutBps`.
+
+The market stores the markup. Its `SettlementEngine` stores both payout ratios. Governance cannot change these values after users enter the market.
+
+`MarketFactory.createMarket` checks these version 1 limits before it deploys a component:
 
 ```text
 markupBps <= 5,000
@@ -33,7 +37,11 @@ markupBps <= 5,000
 cashPayoutBps <= keepPayoutBps
 ```
 
-The bounds limit deployment risk for this fixed implementation version; they are not claims that every accepted policy will attract demand or be profitable. The puller-first flagship target is `250 / 9,000 / 9,900`, meaning 2.5% markup, 90% cash or `$DRAW` swap input, and 99% keep. Its token-independent cash-floor RTP is `9,000 / 10,250 = 87.8%` before gas, swaps, and payment routing. Collectible option value, `$DRAW` market value, and entertainment value are separate and must not be added to that guaranteed floor.
+These limits reduce deployment risk. They do not show that a policy will attract demand or make a profit.
+
+The flagship target is `250 / 9,000 / 9,900`. This means a 2.5% markup, a 90% cash or `$DRAW` input ratio, and a 99% keep ratio.
+
+Its cash-floor return to player is `9,000 / 10,250 = 87.8%`. This figure excludes gas, swaps and payment routing. It also excludes collectible value, `$DRAW` value and entertainment value.
 
 ## Pull flow
 
@@ -63,23 +71,34 @@ sequenceDiagram
     Epoch->>Market: unlockEpoch()
 ```
 
-Each draw recalculates `N`, total inverse-backing weight, expected value, and price after the previous selected leaf has been removed.
+The market recalculates the position count, inverse-backing weight, expected value and price after each selection.
 
-`requestPullFor` can debit only the calling router, and that router must still be approved in `ProtocolRegistry` at call time. Registry deapproval therefore takes effect immediately even if the coordinator role has not yet been revoked.
+`requestPullFor` can debit only the calling router. The registry must still approve that router at call time. Removing registry approval therefore takes effect at once.
 
-A randomness adapter revert, malformed response, zero request ID or request ID reused by the same adapter leaves the epoch in the observable `RandomnessRequested` state and emits `RandomnessRequestFailed`. Anyone can cancel and refund that epoch after `randomnessTimeout`. Each adapter's request IDs are permanently fenced to their originating epoch so a stale request cannot fulfill a later one.
+The epoch records a failed randomness request when an adapter:
 
-Each `resolveEpoch` budget unit covers one encountered queue entry or draw attempt, including completed, expired, ineligible and over-price orders. Receiver eligibility is evaluated with the market policy's `canReceive(receiver, selectedPositionId)` rule before selection. A denial, revert, or malformed policy response is normalized to ineligible, and that order is refunded without resampling or removing the position. Other orders may continue within the same explicit draw budget.
+- reverts
+- returns malformed data
+- returns a zero request ID
+- reuses one of its request IDs
 
-After `randomnessTimeout`, anyone can call `cancelTimedOutEpoch(maxOrders)` only while a seed is still absent in `RandomnessRequested`; late randomness is rejected and each unresolved order is refunded once. Once a valid seed is accepted, it remains binding and `RandomnessReady` or `Resolving` cannot be timeout-cancelled. Resolution remains available after the request timeout.
+The epoch stays in `RandomnessRequested`. Anyone can cancel it after `randomnessTimeout` and refund each unresolved order once. A stale request ID cannot fulfil a later epoch.
 
-An unexpected atomic `resolveDraw` revert restores that attempt's coordinator escrow debit and commits the epoch to irreversible `Refunding` before returning control. Subsequent permissionless `cancelTimedOutEpoch(maxOrders)` calls process at most the supplied order budget and do not wait for another timeout. Resolution cannot resume from `Refunding`. Selections committed by earlier calls remain selected, while only each unresolved suffix is credited once before the epoch unlocks and processes its boundary queues. Because a reverting EVM call cannot retain callee writes, this recovery path never treats a surviving partial market mutation as refundable.
+Each `resolveEpoch` budget unit covers one queue entry or draw attempt. This includes expired, ineligible and over-price orders.
 
-The coordinator calls `resolveDraw` with a fixed 2,000,000-gas stipend and requires a further 300,000-gas recovery reserve before debiting escrow. Calls below that threshold revert without changing the epoch. Every accepted attempt therefore gives the market the same gas budget, preventing a caller from forcing recovery merely by supplying less transaction gas.
+The market checks `canReceive(receiver, selectedPositionId)` before selection. It treats a denial, revert or malformed response as ineligible. The coordinator refunds that order without selecting another position for it.
+
+Anyone can cancel an epoch after the timeout only if it has no accepted seed. Once accepted, the seed remains binding. Resolution can continue after the request timeout.
+
+An unexpected `resolveDraw` revert restores that attempt's escrow debit. It moves the epoch to `Refunding` before returning control.
+
+Later cancellation calls process no more than the supplied order budget. Resolution cannot resume from `Refunding`. Earlier selections remain valid, and each unresolved suffix receives one refund.
+
+The coordinator gives `resolveDraw` a fixed 2,000,000 gas. It also requires 300,000 gas for recovery before it debits escrow. A caller cannot force recovery by supplying less gas.
 
 ## Liability conservation
 
-`DrawMarket.totalLiabilities()` includes its own liabilities plus those owned by its `EpochCoordinator` and `SettlementEngine`.
+`DrawMarket.totalLiabilities()` includes liabilities held by the market, coordinator and settlement engine.
 
 ```text
 vault balance >=
@@ -92,47 +111,60 @@ vault balance >=
   + referral, insurance, buyback and treasury revenue
 ```
 
-Fee-on-transfer and rebasing settlement assets are rejected through exact balance-delta checks. Deposits must increase the vault balance by the accounted amount. Releases must decrease the vault balance and increase the recipient balance by exactly that amount; validating both sides preserves exact user payouts as well as vault solvency under the protocol's non-taxing, non-rebasing supported-token invariant. A failed check reverts the transfer and its associated liability update atomically.
+The protocol rejects fee-on-transfer and rebasing settlement assets. Exact balance checks protect every deposit and release. A failed check reverts the transfer and liability update together.
 
-The Crown takeover threshold is 110% of the incumbent's backing. If the incumbent reduces its backing, succession is recomputed from the active-position backing tree so a reduced Crown cannot remain below another active position. Highest backing wins; equal backing is resolved by the lower tree slot. Selected, staged and removed positions are not succession candidates.
+The Crown takeover threshold is 110% of the incumbent's backing. The market recalculates succession when the incumbent reduces its backing.
 
-Selection zeroes the weighted-tree leaf and freezes the `PositionNFT`; settlement burns it before releasing funds or the underlying NFT. The frozen pull receipt remains as the historical settlement proof.
+The active position with the highest backing wins. The lower tree slot breaks a tie. Selected, staged and removed positions cannot become the Crown.
 
-Revealed settlement first converts cash payouts into owner-bound claims held by the `SettlementEngine`. A rejecting or denylisted payout recipient therefore cannot block settlement or `forceKeep`; only the claim owner can retry delivery or redirect it to another receiver. Draw-market withdrawals apply the same ownership rule independently to backing, cash earnings and the NFT: a failed delivery becomes an owner-bound settlement-asset or NFT claim and never lets the position owner redirect a distinct earnings recipient's value. Refund owners can likewise redirect delivery without transferring ownership of the claim.
+Selection removes the weighted-tree leaf and freezes the `PositionNFT`. Settlement burns that token before it releases funds or the NFT. The pull receipt remains as proof.
 
-Active-position reward input is normally transferred to the `RewardController` and queued for a later protected `$DRAW` purchase. If that enqueue fails during withdrawal or revealed settlement, exit remains live by converting the reward input into an immediately backed, owner-bound **settlement-asset cash fallback**. `RewardFundingCashFallbackAccrued` exposes that final economic choice; it is not a retryable `$DRAW`-funding liability. `$DRAW` settlement is different: the receipt owner supplies `minDrawOut` and route data, and the `RewardController` performs the protected swap atomically. If that swap fails, the receipt and all selected-position liabilities remain unconsumed so the owner can retry or select cash.
+The settlement engine turns revealed cash payouts into owner-bound claims. A blocked recipient cannot stop settlement or `forceKeep`. The claim owner can retry or choose another receiver.
 
-Every successful `RewardController` swap must reduce its input-token balance by exactly the accounted input and leave the remaining balance at least equal to `totalQueued`. Partial/no-pull adapters, controller-paid transfer taxes and adverse rebases revert the whole swap, including entitlement changes, token movement and allowance changes.
+Market withdrawals apply the same rule to backing, earnings and NFT delivery. A failed transfer becomes an owner-bound claim. It does not change who owns another person's earnings.
 
-## Administration
+The `RewardController` normally receives reward input for a later protected `$DRAW` purchase. If that transfer fails during an exit, the owner receives a backed settlement-asset claim instead. `RewardFundingCashFallbackAccrued` records this final choice.
 
-- Deploy `ProtocolRegistry` with a timelock as its admin in production.
-- The guardian can pause only new deposits or new pulls, through separate market and coordinator controls.
-- Withdrawals, refunds, revealed settlements and `forceKeep` have no pause path.
-- Randomness and eligibility modules can change only while no epoch is in flight and must remain registry-approved.
-- Vault operators are set once to the market, epoch coordinator and settlement engine.
+A `$DRAW` settlement follows a different rule. The receipt owner provides `minDrawOut` and route data. A failed swap leaves the receipt and its liabilities unchanged, so the owner can retry or choose cash.
+
+Each successful reward swap must spend the exact input amount. The remaining input balance must still cover `totalQueued`. A partial pull, transfer tax or adverse rebase reverts the whole swap.
+
+## Administration rules
+
+Production administration must follow these rules:
+
+- use a timelock as the `ProtocolRegistry` administrator
+- let the guardian pause only new deposits or pulls
+- keep withdrawals, refunds, revealed settlements and `forceKeep` available
+- change randomness or eligibility modules only when no epoch is active
+- require the registry to approve each replacement module
+- set vault operators once for the market, coordinator and settlement engine
 
 ## Deployment order
 
-1. Deploy the timelock/governor, `$DRAW`, registry, referral registry, reward controller, WETH-aware router and adapter contracts.
-2. Deploy one `DrawMarket` implementation and the four small component deployers.
+1. Deploy the timelock, `$DRAW`, registry, referral registry, reward controller, router and adapters.
+2. Deploy one `DrawMarket` implementation and the 4 component deployers.
 3. Deploy `MarketFactory` with those fixed addresses.
-4. Register the implementation runtime code hash and approve settlement assets/modules/router.
-5. Grant the factory registry-manager and factory roles on the referral and reward controllers.
-6. Create markets through `MarketFactory.createMarket`, supplying the market's immutable `markupBps`, `cashPayoutBps`, and `keepPayoutBps`. Use `250 / 9,000 / 9,900` for the flagship target.
+4. Register the implementation code hash and approve the assets, modules and router.
+5. Grant the factory the required registry, referral and reward roles.
+6. Create each market through `MarketFactory.createMarket`.
+7. Use `250 / 9,000 / 9,900` for the flagship market.
 
-## Production integration gates
+## Complete the production requirements
 
-The repository intentionally does not pretend local mocks are production infrastructure. Mainnet deployment still requires:
+Do not treat the local mocks as production infrastructure. A paid launch still needs:
 
-- a Robinhood Chain audited randomness adapter satisfying withholding and timeout requirements;
-- an audited Uniswap v4 `ISwapAdapter` with Permit2, exact-output routing and price-impact protection;
-- canonical Robinhood Chain WETH and USDG addresses;
-- a timelock/governance deployment and role handoff;
-- external audit, invariant campaign and chain-specific finality testing;
-- collection-specific custody/valuation adapters for physical assets;
-- pre-pull disclosure of the immutable ratios, token-independent cash-floor RTP, outcome-specific uncertainty, and excluded gas/routing costs;
-- a production event indexer that measures settlement choice mix, repeat/cohort pull demand, concentration, and realized token-independent RTP;
-- a public model-versus-reality view once indexed data exists, with review windows and scale/no-scale thresholds recorded before launch.
+- an audited Robinhood Chain randomness adapter with withholding and timeout controls
+- an audited Uniswap v4 adapter with Permit2, exact-output routing and price protection
+- canonical Robinhood Chain WETH and USDG addresses
+- a timelock deployment and role handover
+- an external audit, invariant campaign and chain finality tests
+- collection-specific custody and valuation adapters for physical assets
+- pre-pull disclosure of the fixed ratios, cash-floor return, uncertainty and excluded costs
+- a production indexer for settlement choices, repeat use, concentration and realised return
+- a public comparison of modelled and observed results
+- launch review periods and thresholds set before paid use
 
-The frontend's current typed market/indexer adapter is mock data. It is useful for interaction testing but is not production evidence and does not satisfy the analytics gate. External comparisons can shape scenario tests, including the explicitly labeled 10%/85% legacy stress profile, but do not prove causality.
+The current frontend adapter contains mock data. Use it for interaction testing only. It does not meet the launch evidence requirement.
+
+External comparisons may inform scenario tests. They do not prove that one ratio causes demand, retention or profit.

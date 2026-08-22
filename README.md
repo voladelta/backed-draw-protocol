@@ -1,19 +1,29 @@
 # Backed Draw Protocol
 
-Interactive frontend prototype for the ETH-and-USDG backed collectible draw protocol described in [SPECS.md](./SPECS.md).
+Backed Draw Protocol is a collectible draw system for ETH and USDG markets. Backers deposit a collectible and backing. Pullers pay a pool-derived price for a verifiably random position.
 
-Live demo: [backed-draw-protocol.pages.dev](https://backed-draw-protocol.pages.dev/)
+Each market uses one settlement asset. ETH and USDG never share a probability tree or liability ledger.
 
-The repository also contains the Foundry implementation of the protocol core. See [docs/CONTRACTS.md](./docs/CONTRACTS.md) for boundaries, flows, liabilities, and deployment order.
+This repository contains:
 
-## Run locally
+- a React prototype for the user experience
+- the Solidity contracts for the protocol core
+- tests for pricing, settlement, solvency and liveness
+- the [protocol specification](./SPECS.md)
+- the [contract architecture guide](./docs/CONTRACTS.md)
+
+You can also view the [Backed Draw Protocol demo](https://backed-draw-protocol.pages.dev/).
+
+## Run the project locally
+
+Install the dependencies and start the development server:
 
 ```bash
 bun install
 bun run dev
 ```
 
-Production checks:
+Run the production checks:
 
 ```bash
 bun run build
@@ -24,35 +34,69 @@ bun run contracts:build
 bun run contracts:test
 ```
 
-## Web3 configuration
-
-Copy `.env.example` to `.env.local` and supply the deployed `SwapAndPullRouter`, the selected market addresses, and the canonical USDG address. A wallet transaction is only enabled when the router, selected market, and payment route are all configured; otherwise the UI intentionally remains an interactive preview.
-
-The Robinhood Chain RPC, explorer, chain ID, and WalletConnect project can all be replaced through environment variables. ETH and USDG are kept as distinct settlement assets in the UI and protocol model; native ETH routes can be submitted when their router and market configuration is complete. USDG remains in preview mode until the client implements its explicit ERC-20 approval flow. USDG amounts are encoded with six decimals, while ETH values use 18 decimals.
-
-## Flagship economic target
-
-The puller-first flagship target is a 2.5% markup, a 90% cash or `$DRAW` swap-input ratio, and a 99% keep ratio. These are immutable per-market settings (`markupBps = 250`, `cashPayoutBps = 9_000`, `keepPayoutBps = 9_900`) validated by the factory at market creation.
-
-The token-independent cash-floor RTP is `90% / 102.5% = 87.8%` before gas, swaps, and payment routing. Collectible option value, `$DRAW` market value, and entertainment value are separate; none is a guaranteed addition to the cash floor. [SPECS.md](./SPECS.md) contains the legacy 10%/85% stress profile and lower-markup scenarios for sensitivity analysis. Those scenarios are not return, demand, or profitability promises.
-
-## Architecture
-
-- React 19 + Vite 8 + TypeScript
-- TanStack Router with intent preloading and route-owned pages
-- StyleX-compiled component primitives with typed style props and shared design tokens; see [the StyleX authoring guide](./src/stylex-authoring.md)
-- wagmi + viem for wallet and contract interaction
-- Zustand for app workflow state
-- Pointer-driven React state and CSS transforms for the interactive collectible
-- Pure economic functions with Vitest coverage
-- Solidity 0.8.28 + OpenZeppelin Contracts 5.7.0 + Foundry
-
-Install pinned Solidity dependencies in a fresh clone:
+Install the pinned Solidity dependencies in a fresh clone:
 
 ```bash
 forge install OpenZeppelin/openzeppelin-contracts@v5.7.0 foundry-rs/forge-std@v1.12.0 --no-git --shallow
 ```
 
-Market/indexer data currently comes from the typed mock adapter in `src/data/markets.ts`. It is preview data, not observed protocol performance. Replace that adapter with indexed protocol data without changing page contracts.
+## Configure web3 connections
 
-Before a paid flagship launch, the pre-pull confirmation must show the immutable ratios, cash-floor RTP, outcome-specific uncertainty, and excluded costs. The production indexer must support settlement mix, repeat/cohort demand, pull concentration, realized token-independent RTP, and public model-versus-reality tracking. Record the review window and scale/no-scale thresholds before launch; mock data and token-price movement do not satisfy this evidence gate.
+Copy `.env.example` to `.env.local`. Add the deployed router, market addresses and canonical USDG address.
+
+The interface enables wallet transactions only when it can verify the full route. Otherwise, it stays in preview mode.
+
+You can set the RPC URL, explorer, chain ID and WalletConnect project through environment variables.
+
+The client uses 6 decimals for USDG and 18 decimals for ETH. Native ETH routes work when their router and market configuration is complete. USDG stays in preview mode until the client supports ERC-20 approval.
+
+## Understand the flagship economics
+
+The flagship market uses:
+
+- a 2.5% markup
+- a 90% cash or `$DRAW` swap-input ratio
+- a 99% keep ratio
+
+The factory stores these settings as `250 / 9,000 / 9,900` basis points. They cannot change after market creation.
+
+The cash-floor return to player is `90% / 102.5% = 87.8%`. This figure excludes gas, swaps and payment routing.
+
+The cash floor does not include collectible value, `$DRAW` value or entertainment value. These values are uncertain. The [economic model scenarios](./SPECS.md#economic-model-scenarios) explain the assumptions and comparison cases.
+
+## Understand the architecture
+
+The project uses:
+
+- React 19, Vite 8 and TypeScript
+- TanStack Router for route-owned pages and intent preloading
+- StyleX for typed component styles and shared design tokens
+- wagmi and viem for wallets and contract calls
+- Zustand for interface workflow state
+- Vitest for the pure economic model and frontend logic
+- Solidity 0.8.28, OpenZeppelin Contracts 5.7.0 and Foundry
+
+Use the [StyleX authoring guide](./src/stylex-authoring.md) when you change interface styles.
+
+## Treat current market data as preview data
+
+The interface reads typed mock data from `src/data/markets.ts`. This data does not show live protocol performance.
+
+Replace the mock adapter with indexed protocol data before a paid launch. Keep the existing page contracts when you replace it.
+
+Before launch, the interface must show:
+
+- the market's fixed economic ratios
+- the cash-floor return to player
+- the uncertainty for each settlement choice
+- gas and routing costs that the return figure excludes
+
+The production indexer must measure:
+
+- settlement choices
+- repeat use by cohort
+- pull concentration
+- realised token-independent return to player
+- differences between the model and observed results
+
+Set the review period and launch thresholds before paid use. Mock data and token-price movement do not meet this evidence requirement.

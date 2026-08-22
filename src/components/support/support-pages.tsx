@@ -206,98 +206,86 @@ export function RewardsHub() {
 
 export function HowItWorksPage() {
   return (
-    <PageFrame eyebrow="The draw protocol" title="A collectible pool with rules you can inspect.">
+    <PageFrame eyebrow="How it works" title="Back a collectible or pull one">
       <p className="how-lede">
-        Each pool settles in one asset. ETH and USDG can both be used across the protocol, but their
-        backing, odds, and liabilities never mix inside a pool.
+        Each market uses ETH or USDG. It never mixes assets in its backing, odds or settlement
+        records.
       </p>
       <section className="how-steps" aria-label="How a backed draw works">
-        <HowStep icon={Boxes} number="01" title="Deposit a collectible and backing">
-          Deposit an NFT into a chosen market with ETH or USDG backing. The protocol mints a
-          PositionNFT so ownership, earnings, and withdrawal rights stay with the depositor.
+        <HowStep icon={Boxes} number="01" title="Back a collectible">
+          Choose a market and deposit an NFT with backing. You receive a PositionNFT that records
+          your ownership, earnings and withdrawal rights.
         </HowStep>
-        <HowStep icon={Sparkles} number="02" title="Backing sets the draw odds">
-          Every active position has inverse-backing weight: lower backing is selected more often;
-          deeper backing is likely to stay active longer and earn from more draws.
+        <HowStep icon={Sparkles} number="02" title="Backing sets the selection chance">
+          Lower backing gives a position a higher chance of selection. Higher backing usually keeps
+          it active for longer, so it can earn from more draws.
         </HowStep>
-        <HowStep icon={Coins} number="03" title="Pull price is pool-derived">
-          Each market publishes its settlement policy before you pull. In the flagship market, a
-          pull costs the pool’s expected value plus a 2.5% markup. The base expected-value proceeds
-          are shared equally among active positions; the markup funds backers, DRAW rewards, the
-          Crown, and protocol operations.
+        <HowStep icon={Coins} number="03" title="Check the price and terms">
+          The market shows its price and settlement ratios before you pay. The flagship price is
+          expected value plus 2.5%. Active positions share the base proceeds equally.
         </HowStep>
-        <HowStep icon={ShieldCheck} number="04" title="The active tree locks for an epoch">
-          A pull locks the committed active set. The market requests verifiable randomness, then
-          maps the random target through the committed inverse-backing tree. The proof and tree root
-          belong to the pull receipt.
+        <HowStep icon={ShieldCheck} number="04" title="Verify the draw">
+          The market locks the active positions and requests verifiable randomness. It records the
+          proof and committed tree root on the pull receipt.
         </HowStep>
-        <HowStep icon={BadgeCheck} number="05" title="Reveal the position, then choose">
-          After reveal, the receipt holder can keep the collectible, take discounted cash, swap to
-          DRAW, or immediately relist the position. There is a 24-hour decision window; forceKeep
-          makes the collectible the default if no selection is made.
+        <HowStep icon={BadgeCheck} number="05" title="Choose an outcome">
+          After reveal, you can keep the collectible, take cash, take $DRAW or relist. You have 24
+          hours to choose. Keep becomes the default after the deadline.
         </HowStep>
       </section>
       <section className="how-outcomes" aria-labelledby="settlement-outcomes">
         <div className="how-outcomes-heading">
-          <p>After the reveal</p>
-          <h2 id="settlement-outcomes">Choose how the position settles.</h2>
+          <p>Flagship market</p>
+          <h2 id="settlement-outcomes">Choose an outcome after reveal</h2>
         </div>
         <div>
           <article>
-            <strong>Keep</strong>
-            <span>
-              You receive the collectible. In the flagship market, the backer receives 99% of
-              backing.
-            </span>
+            <strong>Keep the collectible</strong>
+            <span>You receive the collectible. The backer receives 99% of its backing.</span>
           </article>
           <article>
-            <strong>Cash</strong>
-            <span>
-              You receive 90% of backing in the flagship market. The collectible returns to its
-              backer.
-            </span>
+            <strong>Take cash</strong>
+            <span>You receive 90% of the backing. The collectible returns to its backer.</span>
           </article>
           <article>
-            <strong>$DRAW</strong>
-            <span>
-              90% of backing is swapped into $DRAW in the flagship market, with protected routing.
-            </span>
+            <strong>Take $DRAW</strong>
+            <span>The protocol swaps 90% of the backing through a protected route.</span>
           </article>
           <article>
-            <strong>Relist</strong>
-            <span>You become the new backer and choose fresh backing for the position.</span>
+            <strong>Relist the collectible</strong>
+            <span>You become the new backer and provide new backing for the position.</span>
           </article>
         </div>
         <small>
-          Ratios can vary by market and are shown before a paid pull. You have 24 hours to decide.
-          After that, anyone can call forceKeep; Keep becomes the default outcome.
+          Ratios can vary by market. The market shows them before payment. After 24 hours, anyone
+          can call forceKeep and complete the default Keep outcome.
         </small>
       </section>
       <section className="how-ledger">
         <div>
           <p>For pullers</p>
-          <h2>One transparent price, one verifiable result.</h2>
+          <h2>See the price before you pay</h2>
           <span>
-            You may pay through ETH or USDG routing, while the chosen market itself remains
-            accounted entirely in its settlement asset.
+            You can pay through an approved ETH or USDG route. The market still records everything
+            in its chosen settlement asset.
           </span>
         </div>
         <div>
           <p>For backers</p>
-          <h2>Your position earns while it remains active.</h2>
+          <h2>Earn while your position stays active</h2>
           <span>
-            Base draw proceeds, cash markup, and DRAW rewards accrue per active position. The
-            selected position receives that draw’s share before it leaves the tree.
+            Your active position earns base proceeds, cash markup and $DRAW rewards. It receives its
+            final draw share before it leaves the active set.
           </span>
         </div>
       </section>
       <section className="how-currency-note">
         <WalletCards />
         <div>
-          <strong>ETH and USDG have isolated ledgers.</strong>
+          <strong>Each market keeps one settlement asset</strong>
           <p>
-            A market chooses ETH or USDG once. Payment routing can convert at the edge, but odds,
-            pricing, backing, and settlement never blend currencies inside the probability tree.
+            A market chooses ETH or USDG when it is created. Routing can convert payment at the
+            boundary. It cannot mix currencies in the market's odds, price, backing or settlement.
           </p>
         </div>
       </section>

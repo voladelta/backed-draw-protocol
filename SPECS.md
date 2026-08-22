@@ -1,20 +1,18 @@
-# Full Target Specification: Multi-Currency Backed Draw Protocol
+# Backed Draw Protocol specification
 
-The final product should **not** be a USDG-only port and should **not** force the entire mechanism into a Uniswap hook.
+Backed Draw Protocol supports separate ETH and USDG markets. It does not mix currencies within one market. It also keeps NFT custody and delayed settlement outside Uniswap hooks.
 
-The correct end-state is:
+Backers deposit a collectible and backing. Their position earns from each draw while it stays active. Pullers pay a pool-derived price for a verifiably random position.
 
-> A multi-market protocol where users deposit an NFT together with backing, earn from every draw while active, and pullers pay a mathematically derived price for a verifiably random position. Every market settles in one currency—ETH or USDG—but users may pay and receive through either currency using Uniswap routing.
-
-The protocol supports both ETH and USDG from the beginning, but **never mixes them inside the same probability tree or liability ledger**.
+Each market settles in ETH or USDG. Users may pay or receive through either asset when a protected Uniswap route is available.
 
 ---
 
 # 1. Currency decision
 
-## Final rule
+## Use one settlement asset for each market
 
-> **One protocol, many markets. One market, one settlement asset.**
+One protocol can support many markets. Each market must use one settlement asset.
 
 Examples:
 
@@ -29,14 +27,14 @@ Partner Collection Market — USDG
 
 Robinhood Chain uses ETH as its native gas token and has canonical WETH and USDG contracts. It also supports account abstraction, gas sponsorship, batching, and embedded wallets. This makes both settlement choices practical.
 
-## Separate four currency concepts
+## Keep 4 currency concepts separate
 
-| Concept              | Meaning                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------ |
-| **Settlement asset** | The currency in which backing, odds, pricing, earnings, and settlement liabilities are accounted |
-| **Payment asset**    | What the puller provides to the router                                                           |
-| **Payout asset**     | What the user elects to receive after settlement                                                 |
-| **Display currency** | ETH, USD, or another UI-only denomination                                                        |
+| Concept          | Meaning                                                                        |
+| ---------------- | ------------------------------------------------------------------------------ |
+| settlement asset | the asset used for backing, odds, pricing, earnings and settlement liabilities |
+| payment asset    | the asset the puller provides to the router                                    |
+| payout asset     | the asset the user chooses after settlement                                    |
+| display currency | an interface-only value shown in ETH, USD or another denomination              |
 
 For example:
 
@@ -58,21 +56,21 @@ Market receives: USDG
 Random draw and settlement: entirely USDG-denominated
 ```
 
-## Why ETH and USDG must not coexist in one market
+## Keep ETH and USDG in separate markets
 
-A mixed ETH/USDG market would require:
+A mixed ETH and USDG market would need:
 
-- converting every backing into a common oracle numeraire;
-- handling ETH price movement between payment and reveal;
-- determining which currency funds cash settlement;
-- rebalancing reserves;
-- protecting against stale oracle updates;
-- handling cross-currency insolvency;
-- defining who bears swap slippage.
+- converting every backing into a common oracle value
+- handling ETH price movement between payment and reveal
+- deciding which currency funds cash settlement
+- rebalancing reserves
+- protecting against stale oracle updates
+- handling cross-currency insolvency
+- deciding who bears swap slippage
 
-That complexity adds no meaningful consumer benefit. A routing layer gives users the same payment choice without contaminating the core mechanism.
+This would add risk without giving users another payment option. The router already gives users that choice at the market boundary.
 
-## Recommended defaults
+## Choose a default settlement asset
 
 | Asset category                              | Preferred settlement        |
 | ------------------------------------------- | --------------------------- |
@@ -83,19 +81,19 @@ That complexity adds no meaningful consumer benefit. A routing layer gives users
 | Luxury goods and other dollar-priced assets | USDG                        |
 | Partner-created markets                     | Creator chooses ETH or USDG |
 
-**ETH should be the default flagship market.** USDG should be a first-class alternative, particularly for TCG and physical collectibles.
+Use ETH for the default flagship market. Use USDG as a full alternative, particularly for cards and physical collectibles.
 
 ---
 
 # 2. Product definition
 
-Working protocol description:
+Backers deposit a collectible with ETH or USDG backing. The backing sets the position's draw weight. Each active position earns an equal share of base draw proceeds.
 
-> Deposit a collectible with ETH or USDG backing. The backing determines how often the position is likely to be drawn. While active, the position earns an equal share of draw proceeds and fees. Pullers pay one transparent pool-derived price and receive a verifiably random position. After reveal, they choose the collectible, a discounted cash settlement, the protocol token, or immediate relisting.
+Pullers pay one pool-derived price. Verifiable randomness selects a position. After reveal, the puller can keep the collectible, take cash, take `$DRAW` or relist.
 
-The design uses inverse-backing odds, an expected-value pull price plus a per-market markup, four settlement exits, staged deposits, a 24-hour decision period, depositor rewards, referrals, and a Crown mechanism.
+The protocol also uses staged deposits, a 24-hour decision period, backer rewards, referrals and one Crown for each market.
 
-Our target preserves those recognizable mechanics but makes the accounting, currency architecture, modularity, and ownership of every payment explicit. The puller-first flagship target is a 2.5% markup, a 90% cash or `$DRAW` swap-input ratio, and a 99% keep ratio. These values are a launch hypothesis to measure, not a promise of profitability or demand.
+The flagship target uses a 2.5% markup, a 90% cash or `$DRAW` input ratio, and a 99% keep ratio. This is a launch assumption to test. It is not a promise of demand or profit.
 
 ---
 
@@ -117,11 +115,11 @@ S = \sum_j w_j
 p_i = \frac{w_i}{S}
 \]
 
-where:
+In these formulas:
 
-- \(b_i\) is the position’s normalized backing;
-- \(w_i\) is its draw weight;
-- \(p_i\) is its probability of being selected.
+- \(b_i\) is the position's normalised backing
+- \(w_i\) is its draw weight
+- \(p_i\) is its selection probability
 
 Lower backing means higher selection probability. Higher backing means the position remains active longer on average and can earn from more draws.
 
@@ -145,7 +143,7 @@ p_i b_i
 \frac{1}{S}
 \]
 
-every active position contributes **exactly the same amount** to the expected value.
+every active position contributes the same amount to the expected value.
 
 Therefore:
 
@@ -159,13 +157,13 @@ and:
 \frac{EV}{N} = \frac{1}{S}
 \]
 
-This identity should drive the complete economic design.
+The economic design uses this identity throughout.
 
 ---
 
 ## 3.3 Pull price
 
-For the flagship target, \(m=2.5\%\):
+The flagship target uses \(m=2.5\%\):
 
 \[
 PullPrice = EV \times (1+m)
@@ -189,16 +187,18 @@ For a cash payout ratio \(c\), the token-independent cash-floor RTP is:
 CashFloorRTP = \frac{c}{1+m}
 \]
 
-This is the settlement-asset cash entitlement divided by pull price, before gas, swap costs, or payment-routing costs. Product surfaces and analytics must keep four concepts separate:
+This divides the cash entitlement by the pull price. It excludes gas, swap and payment-routing costs.
 
-- **Guaranteed cash floor:** the cash entitlement under the market's immutable cash ratio, subject to the protocol remaining solvent, before gas and routing costs.
-- **Collectible option value:** the puller's subjective value from choosing the NFT instead of cash; it is not a guaranteed return.
-- **Token-dependent return:** the eventual value of `$DRAW` received from the bounded swap; it depends on execution and token price and is not cash-floor RTP.
-- **Entertainment value:** a qualitative user benefit that must not be assigned an invented percentage or included in financial return claims.
+The interface and analytics must keep these values separate:
+
+- guaranteed cash floor: the market's fixed cash entitlement before gas and routing costs
+- collectible option value: the puller's own value for keeping the NFT instead of taking cash
+- token-dependent return: the eventual value of `$DRAW`, which depends on execution and token price
+- entertainment value: a personal benefit that must not appear as a financial return percentage
 
 ### Economic model scenarios
 
-These scenarios are inputs for sensitivity analysis and model-versus-reality tracking. They are not forecasts or promises.
+Use these scenarios to test sensitivity and compare the model with observed results. They are not forecasts or promises.
 
 | Scenario                | Markup | Cash / `$DRAW` input | Keep | Cash-floor RTP |
 | ----------------------- | -----: | -------------------: | ---: | -------------: |
@@ -207,7 +207,9 @@ These scenarios are inputs for sensitivity analysis and model-versus-reality tra
 | Flagship launch target  |   2.5% |                  90% |  99% |          87.8% |
 | Puller-first experiment |   1.5% |                  90% |  99% |          88.7% |
 
-The table isolates the guaranteed cash floor. It does not add token-price appreciation, collectible option value, entertainment value, or gas and swap costs. Comparative evidence may motivate these scenarios, but it does not establish that a particular markup or payout ratio causes demand or retention.
+The table shows only the cash floor. It excludes token-price changes, collectible value, entertainment value, gas and swaps.
+
+Comparisons may inform these scenarios. They do not prove that one markup or payout ratio causes demand or retention.
 
 ---
 
@@ -215,7 +217,7 @@ The table isolates the guaranteed cash floor. It does not add token-price apprec
 
 ## 4.1 Base draw proceeds
 
-**100% of the EV component is divided equally among every position active for that draw.**
+Every position active for a draw receives an equal share of the EV component.
 
 For an active position:
 
@@ -223,14 +225,14 @@ For an active position:
 BaseEarning_i = \frac{EV}{N} = \frac{1}{S}
 \]
 
-This is not an arbitrary equal split. It follows directly from the inverse-backing formula: every position contributes the same amount to EV.
+This split follows from the inverse-backing formula. Every position contributes the same amount to EV.
 
-This corrects the depositor economics:
+The base proceeds account for these facts:
 
-- the depositor supplies both an NFT and backing;
-- when selected, one of those two legs leaves the position;
-- over the position’s expected lifetime, base draw proceeds compensate it for the leg at risk;
-- markup becomes the actual yield premium.
+- the backer supplies an NFT and backing
+- selection removes one of those assets from the position
+- base proceeds pay for the asset at risk over the position's expected life
+- the markup provides the yield premium
 
 The active-position accumulator becomes:
 
@@ -414,7 +416,7 @@ struct MarketKey {
 }
 ```
 
-For native-looking ETH markets, the vault should normalize ETH to canonical WETH internally while the router exposes native ETH deposits and withdrawals.
+For native ETH markets, the vault converts ETH to canonical WETH. The router still provides native ETH deposits and withdrawals.
 
 ## 5.2 Immutable economic policy
 
@@ -457,12 +459,12 @@ Premium Collectibles / ETH
 
 Created by:
 
-- collections;
-- game studios;
-- TCG vault providers;
-- luxury-goods issuers;
-- event organizers;
-- creator communities.
+- collections
+- game studios
+- TCG vault providers
+- luxury-goods issuers
+- event organizers
+- creator communities
 
 Partners can receive a bounded revenue share.
 
@@ -472,13 +474,13 @@ Anyone may create a market using approved templates.
 
 Requirements:
 
-- creator bond;
-- immutable settlement asset;
-- bounded fees;
-- isolated vault;
-- explicit risk label;
-- no appearance in curated discovery by default;
-- malicious collection contracts isolated from other markets.
+- creator bond
+- immutable settlement asset
+- bounded fees
+- isolated vault
+- explicit risk label
+- no appearance in curated discovery by default
+- malicious collection contracts isolated from other markets
 
 ---
 
@@ -522,19 +524,19 @@ maximum backing: percentage or multiple of authenticated valuation
 
 Backing-band updates must:
 
-- be timelocked;
-- apply only to new deposits and backing changes;
-- never force-liquidate an existing position;
-- become effective only between draw epochs.
+- be timelocked
+- apply only to new deposits and backing changes
+- never force-liquidate an existing position
+- become effective only between draw epochs
 
 ## Backing changes
 
 A position owner may:
 
-- add backing;
-- reduce backing;
-- change payout address;
-- change automatic reward preferences.
+- add backing
+- reduce backing
+- change payout address
+- change automatic reward preferences
 
 Any backing change affecting probability is staged until the current epoch completes.
 
@@ -583,13 +585,13 @@ The vault:
 
 `PositionNFT` represents:
 
-- ownership of the deposited position;
-- backing withdrawal rights;
-- accrued base proceeds;
-- accrued markup;
-- accrued `$DRAW`;
-- Crown rights, where applicable;
-- settlement rights if the position is selected.
+- ownership of the deposited position
+- backing withdrawal rights
+- accrued base proceeds
+- accrued markup
+- accrued `$DRAW`
+- Crown rights, where applicable
+- settlement rights if the position is selected
 
 It may be transferred while staged or active.
 
@@ -638,10 +640,10 @@ A custom router may first swap another payment asset into that settlement asset.
 
 The order defines:
 
-- maximum unit price;
-- maximum total price;
-- deadline;
-- minimum `$DRAW` output where relevant.
+- maximum unit price
+- maximum total price
+- deadline
+- minimum `$DRAW` output where relevant
 
 If the active pool state produces a price above the buyer’s limit, the unexecuted draw is refunded.
 
@@ -688,17 +690,17 @@ enum EpochStatus {
 
 ### Idle
 
-- deposits can activate;
-- backing changes can apply;
-- withdrawals can execute;
-- first pull locks the active set.
+- deposits can activate
+- backing changes can apply
+- withdrawals can execute
+- first pull locks the active set
 
 ### Collecting
 
-- active tree is frozen;
-- additional pull orders may join;
-- new deposits and withdrawals are staged;
-- tree root, active count, and total weight are committed.
+- active tree is frozen
+- additional pull orders may join
+- new deposits and withdrawals are staged
+- tree root, active count, and total weight are committed
 
 ### Randomness requested
 
@@ -730,13 +732,13 @@ This prevents one large epoch from exceeding the block gas limit.
 
 ### Finalized
 
-- selected positions remain in settlement state;
-- unselected queued withdrawals execute;
-- backing changes apply;
-- staged positions activate;
-- the next epoch can begin.
+- selected positions remain in settlement state
+- unselected queued withdrawals execute
+- backing changes apply
+- staged positions activate
+- the next epoch can begin
 
-The next epoch does **not** need to wait for every buyer’s 24-hour settlement choice. Selected positions are already removed from the active draw tree.
+The next epoch does not wait for every buyer's 24-hour settlement choice. Selected positions have already left the active draw tree.
 
 ---
 
@@ -792,12 +794,12 @@ weight = Math.mulDiv(
 
 Required rules:
 
-- pull price rounds up;
-- user payouts round down;
-- reward allocations round down;
-- dust goes to the security reserve;
-- minimum backing prevents pathological weights;
-- total tree weight must never overflow its configured integer width.
+- pull price rounds up
+- user payouts round down
+- reward allocations round down
+- dust goes to the security reserve
+- minimum backing prevents pathological weights
+- total tree weight must never overflow its configured integer width
 
 ---
 
@@ -831,16 +833,16 @@ interface IRandomnessAdapter {
 
 A production provider must offer:
 
-- cryptographically verifiable output;
-- no unilateral result selection;
-- public proof verification;
-- replay protection;
-- sufficient mainnet confirmations;
-- documented timeout behavior;
-- audited Robinhood Chain deployment;
-- economic or cryptographic resistance to withholding.
+- cryptographically verifiable output
+- no unilateral result selection
+- public proof verification
+- replay protection
+- sufficient mainnet confirmations
+- documented timeout rules
+- audited Robinhood Chain deployment
+- economic or cryptographic resistance to withholding
 
-## Timeout behavior
+## Timeout rules
 
 If randomness is not delivered before the immutable timeout:
 
@@ -942,22 +944,22 @@ Flagship markets should disable trading of unrevealed receipts. Transferable sea
 
 It should have:
 
-- fixed or capped supply;
-- no guaranteed redemption floor;
-- no claim on user backing;
-- no role in protocol solvency;
-- Uniswap v4 liquidity against WETH and USDG.
+- fixed or capped supply
+- no guaranteed redemption floor
+- no claim on user backing
+- no role in protocol solvency
+- Uniswap v4 liquidity against WETH and USDG
 
 Utility:
 
-- protocol governance;
-- market-creator bonds;
-- curator staking;
-- partner-market creation;
-- fee discounts funded by protocol revenue;
-- boosted referral tiers;
-- protocol-owned liquidity participation;
-- dispute or challenge bonds.
+- protocol governance
+- market-creator bonds
+- curator staking
+- partner-market creation
+- fee discounts funded by protocol revenue
+- boosted referral tiers
+- protocol-owned liquidity participation
+- dispute or challenge bonds
 
 ## 14.2 Reward purchases
 
@@ -997,10 +999,10 @@ If the protected swap cannot execute, the settlement remains unconsumed. The use
 
 Points should be:
 
-- nontransferable;
-- derived entirely from onchain events;
-- reproducible by anyone;
-- not required by core market execution.
+- nontransferable
+- derived entirely from onchain events
+- reproducible by anyone
+- not required by core market execution
 
 Point categories:
 
@@ -1016,13 +1018,13 @@ referrals
 verified physical redemption
 ```
 
-Cross-currency points are normalized offchain at the event timestamp using published oracle data. The core draw must never fail because a points oracle is stale.
+Published oracle data converts cross-currency points offchain at the event time. A stale points oracle must never stop a draw.
 
 ---
 
 # 15. Crown system
 
-There should be **one Crown per market**, not one cross-currency Crown.
+Each market has one Crown. There is no cross-currency Crown.
 
 The deepest active backing holds the Crown.
 
@@ -1039,11 +1041,11 @@ Crown revenue:
 
 The pot pays when:
 
-- another position displaces the Crown;
-- the Crown position is selected;
-- the Crown position withdraws;
-- the collection is retired;
-- the market enters wind-down.
+- another position displaces the Crown
+- the Crown position is selected
+- the Crown position withdraws
+- the collection is retired
+- the market enters wind-down
 
 A staged position cannot take the Crown until it becomes active.
 
@@ -1057,10 +1059,10 @@ A global protocol leaderboard may compare Crown activity in USD terms, but globa
 
 A wallet can bind once to:
 
-- a referrer address;
-- a partner code;
-- a creator market;
-- a campaign identifier.
+- a referrer address
+- a partner code
+- a creator market
+- a campaign identifier
 
 Binding is permanent after the user’s first economically meaningful action.
 
@@ -1073,7 +1075,7 @@ function bindReferral(
 
 ## Referral earnings
 
-Referral income is funded only from realized settlement revenue.
+Referral income comes only from realised settlement revenue.
 
 Default:
 
@@ -1126,12 +1128,12 @@ Do not make custody markets arbitrarily upgradeable.
 
 ## Recommended structure
 
-- registries and factories may be upgradeable through a timelock;
-- each `DrawMarket` is deployed against a fixed implementation version;
-- new logic means a new market implementation version;
-- existing users are never silently migrated;
-- markets can enter wind-down and users can voluntarily migrate;
-- external adapters may be changed only between epochs and after notice.
+- registries and factories may be upgradeable through a timelock
+- each `DrawMarket` is deployed against a fixed implementation version
+- new logic means a new market implementation version
+- existing users are never silently migrated
+- markets can enter wind-down and users can voluntarily migrate
+- external adapters may be changed only between epochs and after notice
 
 Immutable per-market parameters:
 
@@ -1164,9 +1166,9 @@ reward execution parameters
 
 # 19. Uniswap v4’s role
 
-The draw protocol should be **v4-integrated**, but its NFT custody and 24-hour settlement state should not be trapped inside a PoolManager callback.
+The protocol uses Uniswap v4 for routing and liquidity. It keeps NFT custody and the 24-hour settlement state outside `PoolManager` callbacks.
 
-Uniswap v4 custom accounting can replace standard swap pricing, and AsyncSwap hooks can take swap input while economic fulfillment happens later. Native ETH is also supported by v4 pools.
+Uniswap v4 custom accounting can replace standard swap pricing. AsyncSwap hooks can take input before the economic action finishes. Version 4 pools also support native ETH.
 
 ## 19.1 Required: `SwapAndPullRouter`
 
@@ -1184,15 +1186,15 @@ DrawMarket.requestPull()
 
 Capabilities:
 
-- ETH → ETH market;
-- ETH → USDG market;
-- USDG → ETH market;
-- USDG → USDG market;
-- arbitrary approved ERC-20 → market asset;
-- exact-output and maximum-input protection;
-- Permit2;
-- account-abstraction batching;
-- dust refunds.
+- ETH → ETH market
+- ETH → USDG market
+- USDG → ETH market
+- USDG → USDG market
+- arbitrary approved ERC-20 → market asset
+- exact-output and maximum-input protection
+- Permit2
+- account-abstraction batching
+- dust refunds
 
 ## 19.2 Required: settlement routing
 
@@ -1212,13 +1214,13 @@ The core market first establishes a settlement-asset entitlement. Conversion hap
 
 `RevenueHook` can manage:
 
-- protocol-owned `$DRAW/WETH` liquidity;
-- protocol-owned `$DRAW/USDG` liquidity;
-- fee collection;
-- fee compounding;
-- bounded protocol buybacks;
-- insurance-fund contributions;
-- reporting of hook-owned reserves.
+- protocol-owned `$DRAW/WETH` liquidity
+- protocol-owned `$DRAW/USDG` liquidity
+- fee collection
+- fee compounding
+- bounded protocol buybacks
+- insurance-fund contributions
+- reporting of hook-owned reserves
 
 ## 19.4 Optional: v4-native pull intake
 
@@ -1253,10 +1255,10 @@ native ETH received
 
 Advantages:
 
-- uniform ERC-20 accounting;
-- safer transfer handling;
-- compatibility with yield or liquidity modules;
-- no accidental ETH transfer ambiguity.
+- uniform ERC-20 accounting
+- safer transfer handling
+- compatibility with yield or liquidity modules
+- no accidental ETH transfer ambiguity
 
 On payout:
 
@@ -1283,18 +1285,18 @@ A failed native transfer must not block settlement. The fallback is claimable WE
 
 USDG markets use:
 
-- canonical USDG;
-- Permit2;
-- exact balance-delta checks;
-- no fee-on-transfer assumptions;
-- direct USDG payouts.
+- canonical USDG
+- Permit2
+- exact balance-delta checks
+- no fee-on-transfer assumptions
+- direct USDG payouts
 
 USDG is useful because:
 
-- backing remains stable in dollar terms;
-- physical cards are normally appraised in dollars;
-- users can understand the cash exit without ETH-price movement;
-- collection backing bands are easier to operate.
+- backing remains stable in dollar terms
+- physical cards are normally appraised in dollars
+- users can understand the cash exit without ETH-price movement
+- collection backing bands are easier to operate
 
 Users without ETH for gas can use sponsored account-abstraction transactions. Robinhood Chain supports gas sponsorship, batching, session keys, and embedded wallet infrastructure.
 
@@ -1350,93 +1352,93 @@ The application can sponsor low-cost interactions while setting spend limits and
 
 ### Explore
 
-- curated markets;
-- ETH/USDG selector;
-- active inventory;
-- pull price;
-- aggregate backing;
-- recent jackpots;
-- verified physical assets;
-- partner markets.
+- curated markets
+- ETH/USDG selector
+- active inventory
+- pull price
+- aggregate backing
+- recent jackpots
+- verified physical assets
+- partner markets
 
 ### Market
 
-- live position cards;
-- exact probability;
-- backing;
-- collection;
-- historical earnings;
-- Crown holder;
-- current EV and markup;
-- recent draws;
-- verifiable active-tree root.
+- live position cards
+- exact probability
+- backing
+- collection
+- historical earnings
+- Crown holder
+- current EV and markup
+- recent draws
+- verifiable active-tree root
 
 ### Pull
 
-- number of draws;
-- settlement market;
-- payment asset;
-- maximum spend;
-- expected price;
-- immutable markup, cash payout, and keep payout ratios;
-- token-independent cash-floor RTP, using `cashPayoutBps / (10,000 + markupBps)`;
-- possible payout range, with collectible option value and `$DRAW` output clearly labeled as estimates rather than guaranteed cash return;
-- gas, swap, and payment-routing costs that are excluded from the cash-floor RTP;
-- legal disclosure;
-- referral attribution.
+- number of draws
+- settlement market
+- payment asset
+- maximum spend
+- expected price
+- immutable markup, cash payout, and keep payout ratios
+- token-independent cash-floor RTP, using `cashPayoutBps / (10,000 + markupBps)`
+- possible payout range, with collectible value and `$DRAW` output labelled as estimates
+- gas, swap, and payment-routing costs that are excluded from the cash-floor RTP
+- legal disclosure
+- referral attribution
 
 ### Reveal
 
-- randomness provider;
-- request commitment;
-- proof;
-- selected weight;
-- cumulative-weight target;
-- selected position;
-- verification code or transaction link.
+- randomness provider
+- request commitment
+- proof
+- selected weight
+- cumulative-weight target
+- selected position
+- verification code or transaction link
 
 ### Position management
 
-- backing;
-- probability;
-- earnings;
-- accrued `$DRAW`;
-- Crown status;
-- queue status;
-- change backing;
-- withdraw;
-- transfer `PositionNFT`.
+- backing
+- probability
+- earnings
+- accrued `$DRAW`
+- Crown status
+- queue status
+- change backing
+- withdraw
+- transfer `PositionNFT`
 
 ### Settlement
 
-- keep;
-- cash;
-- `$DRAW`;
-- relist;
-- countdown;
-- estimated payout;
-- swap slippage;
-- force-settlement status.
+- keep
+- cash
+- `$DRAW`
+- relist
+- countdown
+- estimated payout
+- swap slippage
+- force-settlement status
 
 ### Rewards
 
-- points;
-- `$DRAW`;
-- referrals;
-- Crown history;
-- partner revenue;
-- season rankings.
+- points
+- `$DRAW`
+- referrals
+- Crown history
+- partner revenue
+- season rankings
 
 ### Market creation
 
-- collection set;
-- ETH or USDG;
-- fees within protocol bounds;
-- creator bond;
-- eligibility policy;
-- market branding;
-- partner revenue;
-- risk disclosures.
+- collection set
+- ETH or USDG
+- fees within protocol bounds
+- creator bond
+- eligibility policy
+- market branding
+- partner revenue
+- risk disclosures
 
 ---
 
@@ -1461,17 +1463,28 @@ Required services:
 
 Every UI quote must still include an onchain maximum price.
 
-## 24.1 Puller-first launch and analytics gate
+## 24.1 Meet the paid launch evidence requirement
 
-Before a paid flagship launch, the pre-pull confirmation must disclose the immutable markup, cash, and keep ratios; cash-floor RTP; the distinction between cash, collectible, and `$DRAW` outcomes; and excluded gas and routing costs. The event schema and production indexer must also be able to derive:
+Before a paid flagship launch, show these terms before each pull:
 
-- settlement choice mix, including cash, keep, `$DRAW`, relist, and forced outcomes;
-- repeat-pull demand by wallet cohort and time window;
-- pull concentration, including the share attributable to the largest wallets or cohorts;
-- realized token-independent RTP from settlement-asset entitlements and pull prices, before gas;
-- model-versus-reality comparisons for volume, settlement mix, and cohort retention under each deployed economic policy.
+- the fixed markup, cash and keep ratios
+- the cash-floor return to player
+- the difference between cash, collectible and `$DRAW` outcomes
+- gas and routing costs excluded from the cash floor
 
-The current frontend market/indexer adapter is mock data and does not satisfy this evidence gate. Once indexed production data exists, publish the model inputs beside the observed metrics and label sample windows and cohort definitions. Governance should pre-register the review window and scale/no-scale thresholds before launch; a passing contract test or favorable token price is not evidence of sustainable pull demand. Comparative market evidence can inform the hypothesis but does not prove that the policy caused observed demand.
+The production indexer must measure:
+
+- cash, keep, `$DRAW`, relist and forced settlement choices
+- repeat pulls by wallet cohort and period
+- the share of pulls from the largest wallets or cohorts
+- realised token-independent return from entitlements and pull prices
+- differences between modelled and observed volume, settlement choices and retention
+
+The current frontend adapter contains mock data. It does not meet this evidence requirement.
+
+Publish model inputs beside observed results when indexed data exists. State the sample period and cohort definitions.
+
+Set the review period and launch thresholds before paid use. Contract tests and token-price changes do not show sustainable demand. Market comparisons can inform the test, but they do not prove cause.
 
 ---
 
@@ -1533,30 +1546,30 @@ Every settlement consumes the selected backing liability.
 
 No administrator can:
 
-- transfer an NFT from the vault;
-- sweep backing;
-- redirect position earnings;
-- alter a resolved draw;
-- replace randomness;
-- block an eligible withdrawal permanently;
-- modify the economic policy of an existing market.
+- transfer an NFT from the vault
+- sweep backing
+- redirect position earnings
+- alter a resolved draw
+- replace randomness
+- block an eligible withdrawal permanently
+- modify the economic policy of an existing market
 
 ## Pausing
 
 A guardian may pause:
 
-- new deposits;
-- new backing changes;
-- new pull requests;
-- new market creation.
+- new deposits
+- new backing changes
+- new pull requests
+- new market creation
 
 A guardian may not pause:
 
-- withdrawals from unselected positions;
-- claims;
-- revealed settlements;
-- forced keep;
-- refunds after randomness failure.
+- withdrawals from unselected positions
+- claims
+- revealed settlements
+- forced keep
+- refunds after randomness failure
 
 ---
 
@@ -1564,28 +1577,28 @@ A guardian may not pause:
 
 Markets must defend against:
 
-- malicious `onERC721Received` callbacks;
-- reentrant NFT contracts;
-- mutable metadata;
-- frozen or blacklistable assets;
-- counterfeit collections;
-- ERC-1155 quantity inconsistencies;
-- fee-on-transfer settlement tokens;
-- rebasing tokens;
-- callback-heavy token standards;
-- physical issuer insolvency.
+- malicious `onERC721Received` callbacks
+- reentrant NFT contracts
+- mutable metadata
+- frozen or blacklistable assets
+- counterfeit collections
+- ERC-1155 quantity inconsistencies
+- fee-on-transfer settlement tokens
+- rebasing tokens
+- callback-heavy token standards
+- physical issuer insolvency
 
 Recommended controls:
 
-- isolated vault per market;
-- collection allowlist;
-- reentrancy guards;
-- checks-effects-interactions;
-- collection-specific custody adapters;
-- actual-balance-delta verification;
-- no arbitrary delegatecall modules;
-- emergency collection retirement at epoch boundaries;
-- explicit issuer and redemption disclosures for vaulted assets.
+- isolated vault per market
+- collection allowlist
+- reentrancy guards
+- checks-effects-interactions
+- collection-specific custody adapters
+- actual-balance-delta verification
+- no arbitrary delegatecall modules
+- emergency collection retirement at epoch boundaries
+- explicit issuer and redemption disclosures for vaulted assets
 
 ---
 
@@ -1593,13 +1606,13 @@ Recommended controls:
 
 The full protocol can support:
 
-- vaulted trading cards;
-- watches;
-- sneakers;
-- game items;
-- digital memberships;
-- redeemable collectibles;
-- authenticated luxury goods.
+- vaulted trading cards
+- watches
+- sneakers
+- game items
+- digital memberships
+- redeemable collectibles
+- authenticated luxury goods
 
 The NFT must represent a legally and operationally enforceable claim against a vault or issuer.
 
@@ -1649,13 +1662,13 @@ interface IEligibilityPolicy {
 
 Possible policies:
 
-- permissionless;
-- partner allowlist;
-- age or identity attestation;
-- jurisdiction attestation;
-- accredited or qualified participant;
-- game-community membership;
-- issuer-specific RWA restrictions.
+- permissionless
+- partner allowlist
+- age or identity attestation
+- jurisdiction attestation
+- accredited or qualified participant
+- game-community membership
+- issuer-specific RWA restrictions
 
 The core protocol remains neutral and composable, while individual regulated markets can enforce the policy they require.
 
@@ -1752,19 +1765,21 @@ PullReceipt:
 
 The product to build is:
 
-> **A full ETH-and-USDG-backed randomized collectible market on Robinhood Chain. Positions contribute an NFT and backing, earn their exact equal contribution to every draw’s expected value plus fee yield, and settle through four consumer choices. Uniswap v4 provides payment routing, payout conversion, reward-token liquidity, protocol-owned liquidity, and an optional custom-accounting pull entry point.**
+Backed Draw Protocol provides separate ETH and USDG collectible markets on Robinhood Chain. Each position supplies an NFT and backing. It earns an equal share of expected-value proceeds and fee yield while active.
+
+Pullers choose one of 4 settlement options after reveal. Uniswap v4 provides payment routing, payout conversion and reward-token liquidity. It can also provide an optional custom-accounting entry point.
 
 The critical boundaries are:
 
-1. **ETH and USDG are separate settlement markets.**
-2. **Users may still pay with either asset through routing.**
-3. **The entire pull payment is explicitly allocated.**
-4. **The EV component belongs equally to active positions.**
-5. **Only the markup and settlement spreads fund protocol incentives.**
-6. **Randomness, NFT custody, and 24-hour settlement live outside PoolManager.**
-7. **Uniswap v4 remains deeply integrated without forcing asynchronous NFT state into a swap callback.**
-8. **Every market is isolated, versioned, and non-seizable.**
-9. **The protocol supports flagship, partner, and permissionless markets.**
-10. **The full system includes Crown, referrals, points, `$DRAW`, physical collectibles, account abstraction, verification tooling, and optional eligibility policies.**
+1. Keep ETH and USDG in separate settlement markets.
+2. Let users pay with either asset through protected routing.
+3. Allocate every part of the pull payment.
+4. Divide the EV component equally between active positions.
+5. Fund protocol incentives from markup and settlement revenue.
+6. Keep randomness, NFT custody and delayed settlement outside `PoolManager`.
+7. Use Uniswap v4 without placing asynchronous NFT state in a swap callback.
+8. Keep each market isolated, versioned and non-seizable.
+9. Support flagship, partner and permissionless markets.
+10. Include the Crown, referrals, points, `$DRAW`, physical assets, account abstraction, verification and optional eligibility rules.
 
-This is the end-state specification to freeze before dividing implementation into workstreams.
+Agree this specification before dividing the remaining implementation work.

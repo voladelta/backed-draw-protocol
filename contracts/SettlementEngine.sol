@@ -84,7 +84,6 @@ contract SettlementEngine is ReentrancyGuard {
     event SettlementPayoutAccrued(address indexed claimOwner, uint256 amount);
     event SettlementPayoutClaimed(address indexed claimOwner, address indexed receiver, uint256 amount);
     event RewardFundingDeferred(address indexed beneficiary, uint256 amount);
-    event DrawSettlementDeferred(address indexed beneficiary, uint256 amount);
 
     constructor(
         address market_,
@@ -208,14 +207,10 @@ contract SettlementEngine is ReentrancyGuard {
         delete selectedPositions[receiptId];
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
         _fundRewardInput(position);
-        try this.dispatchSettlementReward(msg.sender, rewardAmount, minDrawOut, routeData) returns (
-            uint256 amountOut
-        ) {
-            drawAmount = amountOut;
-        } catch {
-            _accrueSettlementClaim(msg.sender, rewardAmount);
-            emit DrawSettlementDeferred(msg.sender, rewardAmount);
-        }
+        vault.releaseSettlement(address(rewardController), rewardAmount);
+        drawAmount = rewardController.swapSettlement(
+            msg.sender, settlementAsset, rewardAmount, minDrawOut, routeData
+        );
         _deliverOrDeferNFT(position.previousOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
@@ -361,17 +356,6 @@ contract SettlementEngine is ReentrancyGuard {
         uint256 queuedAfter = rewardController.queuedInput(beneficiary, settlementAsset);
         uint256 expected = queuedBefore + amount;
         if (queuedAfter != expected) revert RewardEnqueueMismatch(expected, queuedAfter);
-    }
-
-    function dispatchSettlementReward(
-        address beneficiary,
-        uint256 amount,
-        uint256 minDrawOut,
-        bytes calldata routeData
-    ) external returns (uint256 drawAmount) {
-        if (msg.sender != address(this)) revert OnlySelf();
-        vault.releaseSettlement(address(rewardController), amount);
-        return rewardController.swapSettlement(beneficiary, settlementAsset, amount, minDrawOut, routeData);
     }
 
     function _accrueSettlementClaim(address claimOwner, uint256 amount) private {

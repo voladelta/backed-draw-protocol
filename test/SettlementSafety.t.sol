@@ -18,11 +18,30 @@ import { PullReceipt } from "../contracts/tokens/PullReceipt.sol";
 import { MarketVault } from "../contracts/MarketVault.sol";
 import { ProtocolTypes } from "../contracts/types/ProtocolTypes.sol";
 import { IEligibilityPolicy } from "../contracts/interfaces/IEligibilityPolicy.sol";
+import { ISwapAdapter } from "../contracts/interfaces/ISwapAdapter.sol";
 import { MockDenylistERC20 } from "./mocks/MockDenylistERC20.sol";
 import { MockERC20 } from "./mocks/MockERC20.sol";
 import { MockERC721 } from "./mocks/MockERC721.sol";
 import { MockRandomnessAdapter } from "./mocks/MockRandomnessAdapter.sol";
 import { MockRewardController } from "./mocks/MockRewardController.sol";
+
+contract SettlementSafetyNoOutputAdapter is ISwapAdapter {
+    function swapExactOutput(address, address, uint256, uint256, address, bytes calldata)
+        external
+        pure
+        returns (uint256)
+    {
+        revert("not implemented");
+    }
+
+    function swapExactInput(address inputAsset, address, uint256 amountIn, uint256, address, bytes calldata)
+        external
+        returns (uint256)
+    {
+        require(IERC20(inputAsset).transferFrom(msg.sender, address(this), amountIn));
+        return type(uint256).max;
+    }
+}
 
 contract SettlementSafetyRejectingReceiver is IERC721Receiver {
     address public rejectedCollection;
@@ -255,27 +274,60 @@ contract SettlementSafetyTest is Test {
         _assertSettledWithClaim(alice, 99 ether + cashEarnings);
     }
 
-    function testProtectedDrawSwapFailureDefersSettlementAssetAndFinalizesReceipt() external {
+    function testProtectedDrawSwapFailureLeavesReceiptUnconsumedForCashRetry() external {
         _deployMarket(address(0), 1_000 ether, buyback);
         _deposit(alice, 1, 100 ether);
         _drawOne(buyer, 146);
+        uint256 liabilitiesBefore = engine.totalLiabilities();
         rewards.setRejectSettlementSwap(true);
 
         vm.prank(buyer);
+        vm.expectRevert(MockRewardController.SettlementSwapRejected.selector);
         engine.settleDraw(1, 85 ether, hex"deadbeef");
 
-        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Revealed));
         (,,,, uint128 backing,,) = engine.selectedPositions(1);
-        assertEq(backing, 0);
-        assertEq(engine.selectedBackingLiability(), 0);
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(backing, 100 ether);
+        assertEq(engine.selectedBackingLiability(), 100 ether);
+        assertEq(engine.totalLiabilities(), liabilitiesBefore);
         assertEq(rewards.settlementInput(buyer, address(asset)), 0);
-        assertEq(collection.ownerOf(1), alice);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertEq(collection.ownerOf(1), address(vault));
 
-        uint256 buyerBefore = asset.balanceOf(buyer);
+        rewards.setRejectSettlementSwap(false);
         vm.prank(buyer);
-        engine.claimSettlement(buyer);
-        assertEq(asset.balanceOf(buyer) - buyerBefore, 85 ether);
+        engine.settleCash(1);
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
+        assertEq(engine.settlementClaims(buyer), 85 ether);
+    }
+
+    function testNoOutputAdapterCannotConsumeProtectedDrawSettlement() external {
+        MockERC20 draw = new MockERC20("Draw", "DRAW", 18);
+        SettlementSafetyNoOutputAdapter adapter = new SettlementSafetyNoOutputAdapter();
+        RewardController protectedRewards = new RewardController(governor, address(draw), address(adapter));
+        _deployMarketWithRewardController(address(protectedRewards));
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 147);
+        uint256 liabilitiesBefore = engine.totalLiabilities();
+        bytes32 marketRole = protectedRewards.MARKET_ROLE();
+        vm.prank(governor);
+        protectedRewards.grantRole(marketRole, address(engine));
+
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(RewardController.SlippageExceeded.selector, 0, 85 ether));
+        engine.settleDraw(1, 85 ether, "");
+
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Revealed));
+        (,,,, uint128 backing,, uint256 rewardInput) = engine.selectedPositions(1);
+        assertEq(backing, 100 ether);
+        assertGt(rewardInput, 0);
+        assertEq(engine.selectedBackingLiability(), 100 ether);
+        assertEq(engine.totalLiabilities(), liabilitiesBefore);
+        assertEq(protectedRewards.queuedInput(alice, address(asset)), 0);
+        assertEq(asset.balanceOf(address(protectedRewards)), 0);
+        assertEq(asset.balanceOf(address(adapter)), 0);
+        assertEq(draw.balanceOf(buyer), 0);
+        assertEq(collection.ownerOf(1), address(vault));
     }
 
     function testRewardControllerFailureCannotBlockKeep() external {
@@ -389,24 +441,23 @@ contract SettlementSafetyTest is Test {
         assertTrue(market.solvent());
     }
 
-    function testRewardControllerFailuresCannotBlockDrawSettlement() external {
+    function testRewardEnqueueFailureCannotBlockSuccessfulDrawSettlement() external {
         _deployMarket(address(0), 1_000 ether, buyback);
         _deposit(alice, 1, 100 ether);
         _drawOne(buyer, 205);
         (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
         rewards.setRejectEnqueue(true);
-        rewards.setRejectSettlementSwap(true);
 
         vm.prank(buyer);
         uint256 drawAmount = engine.settleDraw(1, 85 ether, hex"deadbeef");
 
-        assertEq(drawAmount, 0);
+        assertEq(drawAmount, 85 ether);
         assertGt(rewardInput, 0);
         assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(engine.settlementClaims(buyer), 0);
         assertEq(rewards.queued(alice, address(asset)), 0);
-        assertEq(rewards.settlementInput(buyer, address(asset)), 0);
-        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 85 ether);
+        assertEq(asset.balanceOf(address(rewards)), 85 ether);
         assertEq(collection.ownerOf(1), alice);
         assertTrue(market.solvent());
     }

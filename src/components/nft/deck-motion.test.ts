@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   deckOrder,
+  nextDeckIndex,
   resolveDeckRelease,
   riffleOrder,
   rubberBandDrag,
@@ -12,6 +13,11 @@ describe("deck order", () => {
     expect(deckOrder(5, 3)).toEqual([3, 4, 0, 1, 2])
     expect(deckOrder(5, -1)).toEqual([4, 0, 1, 2, 3])
     expect(wrapIndex(8, 5)).toBe(3)
+  })
+
+  it("advances after removing the top card, regardless of its exit side", () => {
+    expect(nextDeckIndex(0, 5)).toBe(1)
+    expect(nextDeckIndex(4, 5)).toBe(0)
   })
 
   it("creates a stable left-first riffle order for odd and even packs", () => {

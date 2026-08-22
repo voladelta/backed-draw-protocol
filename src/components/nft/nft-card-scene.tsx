@@ -12,6 +12,7 @@ import {
 import { spinAudio } from "@/audio/spin-audio"
 import {
   deckOrder,
+  nextDeckIndex,
   resolveDeckRelease,
   rubberBandDrag,
   wrapIndex,
@@ -44,7 +45,7 @@ type CardCssProperties = CSSProperties & Record<"--accent" | "--stack-index", st
 
 const VELOCITY_WINDOW_MS = 90
 const DECK_COMMIT_DISTANCE_PX = 72
-const THROW_DURATION_MS = 240
+const THROW_DURATION_MS = 160
 const FLIP_DURATION_MS = 680
 const POINTER_IDLE_MS = 500
 const RETURN_DURATION_MS = 180
@@ -330,7 +331,7 @@ export function NftCardScene({
   )
 
   const throwCard = useCallback(
-    (direction: -1 | 1, animate = true, preserveDrag = false) => {
+    (exitDirection: -1 | 1, animate = true, preserveDrag = false) => {
       if (!canInspect || throwingRef.current || positions.length < 2) return
       throwingRef.current = true
       const activeCard = activeCardRef.current
@@ -343,7 +344,7 @@ export function NftCardScene({
 
       const finish = () => {
         if (activeCard) setCardDrag(activeCard, 0)
-        onSelect(wrapIndex(activeIndex + direction, positions.length))
+        onSelect(nextDeckIndex(activeIndex, positions.length))
         setThrowDirection(0)
         throwingRef.current = false
       }
@@ -352,7 +353,7 @@ export function NftCardScene({
         finish()
         return
       }
-      setThrowDirection(direction)
+      setThrowDirection(exitDirection)
       throwTimerRef.current = setTimeout(finish, THROW_DURATION_MS)
     },
     [activeIndex, canInspect, onInspectionChange, onSelect, positions.length, reducedMotion],

@@ -12,6 +12,9 @@ export const wrapIndex = (value: number, length: number) => {
 export const deckOrder = (length: number, activeIndex: number) =>
   Array.from({ length }, (_, offset) => wrapIndex(activeIndex + offset, length))
 
+export const nextDeckIndex = (activeIndex: number, length: number) =>
+  wrapIndex(activeIndex + 1, length)
+
 export const projectDrag = (distance: number, velocity: number, projectionSeconds = 0.12) =>
   distance + velocity * projectionSeconds
 

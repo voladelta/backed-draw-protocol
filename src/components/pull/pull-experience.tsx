@@ -335,9 +335,6 @@ function StageArtifact({
               >
                 <ChevronLeft aria-hidden="true" />
               </button>
-              <span aria-live="polite">
-                {selectedIndex + 1} / {market.positions.length}
-              </span>
               <button
                 aria-label="Move the top card around the right side to the back"
                 onClick={(event) => cycleCard(1, event.detail !== 0)}

@@ -1067,22 +1067,6 @@ summary:focus-visible,
 .arena-spin-controls button svg {
   width: 18px;
 }
-.arena-spin-controls > span {
-  position: absolute;
-  top: 170px;
-  left: 50%;
-  min-width: 52px;
-  padding: 5px 8px;
-  transform: translateX(-50%);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(7, 10, 8, 0.62);
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  text-align: center;
-}
 .arena-gesture > span,
 .gacha-arena .artifact-stage-copy p {
   margin: 0;

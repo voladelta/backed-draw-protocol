@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { deckOrder, resolveDeckRelease, riffleOrder, wrapIndex } from "./deck-motion"
+import {
+  deckOrder,
+  resolveDeckRelease,
+  riffleOrder,
+  rubberBandDrag,
+  wrapIndex,
+} from "./deck-motion"
 
 describe("deck order", () => {
   it("wraps the active card and preserves every card exactly once", () => {
@@ -27,5 +33,17 @@ describe("deck release", () => {
   it("uses projected momentum for a flick", () => {
     expect(resolveDeckRelease(20, 500)).toMatchObject({ commit: true, direction: 1 })
     expect(resolveDeckRelease(-20, -500)).toMatchObject({ commit: true, direction: -1 })
+  })
+})
+
+describe("deck drag", () => {
+  it("tracks the pointer directly inside the commit boundary", () => {
+    expect(rubberBandDrag(48)).toBe(48)
+    expect(rubberBandDrag(-48)).toBe(-48)
+  })
+
+  it("adds resistance beyond the commit boundary", () => {
+    expect(rubberBandDrag(112)).toBe(86)
+    expect(rubberBandDrag(-112)).toBe(-86)
   })
 })

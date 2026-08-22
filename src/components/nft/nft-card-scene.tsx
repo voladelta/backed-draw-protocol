@@ -10,11 +10,16 @@ import {
   type Ref,
 } from "react"
 import { spinAudio } from "@/audio/spin-audio"
-import { deckOrder, resolveDeckRelease, wrapIndex } from "@/components/nft/deck-motion"
+import {
+  deckOrder,
+  resolveDeckRelease,
+  rubberBandDrag,
+  wrapIndex,
+} from "@/components/nft/deck-motion"
 import type { Market, Position, PullStage } from "@/types/protocol"
 import "@/components/nft/nft-card.css"
 
-export type DeckCycleRequest = { id: number; direction: -1 | 1 }
+export type DeckCycleRequest = { id: number; direction: -1 | 1; animate?: boolean }
 
 type NftCardSceneProps = {
   market: Market
@@ -35,31 +40,21 @@ type DragState = {
   moved: boolean
 }
 
-type CardCssProperties = CSSProperties &
-  Record<
-    | "--accent"
-    | "--pointer-x"
-    | "--pointer-y"
-    | "--background-x"
-    | "--background-y"
-    | "--pointer-distance"
-    | "--tilt-x"
-    | "--tilt-y"
-    | "--drag-x"
-    | "--drag-rotation"
-    | "--stack-index",
-    string | number
-  >
+type CardCssProperties = CSSProperties & Record<"--accent" | "--stack-index", string | number>
 
 const VELOCITY_WINDOW_MS = 90
 const DECK_COMMIT_DISTANCE_PX = 72
-const THROW_DURATION_MS = 360
+const THROW_DURATION_MS = 240
 const FLIP_DURATION_MS = 680
 const POINTER_IDLE_MS = 500
+const RETURN_DURATION_MS = 180
 const STACK_CARD_COUNT = 6
 
 const prefersReducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+
+const hasFinePointer = () =>
+  typeof window !== "undefined" && window.matchMedia("(hover: hover) and (pointer: fine)").matches
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
@@ -78,6 +73,11 @@ const formatBacking = (value: number, asset: string) =>
   }).format(value)
 
 const shortId = (id: string) => id.replace(/^#/, "").slice(-6).toUpperCase()
+
+const setCardDrag = (card: HTMLDivElement, distance: number) => {
+  card.style.setProperty("--drag-x", `${distance}px`)
+  card.style.setProperty("--drag-rotation", `${distance * 0.025}deg`)
+}
 
 function CardBack({ hidden }: { hidden: boolean }) {
   return (
@@ -174,7 +174,6 @@ type TradingCardProps = {
   faceUp: boolean
   stackIndex: number
   className?: string
-  dragX?: number
   interactive?: boolean
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onPointerMove?: (event: ReactPointerEvent<HTMLDivElement>) => void
@@ -192,7 +191,6 @@ function TradingCard({
   faceUp,
   stackIndex,
   className = "",
-  dragX = 0,
   interactive = false,
   onPointerDown,
   onPointerMove,
@@ -204,15 +202,6 @@ function TradingCard({
 }: TradingCardProps) {
   const style: CardCssProperties = {
     "--accent": accent,
-    "--pointer-x": "50%",
-    "--pointer-y": "50%",
-    "--background-x": "50%",
-    "--background-y": "50%",
-    "--pointer-distance": 0,
-    "--tilt-x": "0deg",
-    "--tilt-y": "0deg",
-    "--drag-x": `${dragX}px`,
-    "--drag-rotation": `${dragX * 0.025}deg`,
     "--stack-index": stackIndex,
   }
 
@@ -243,6 +232,7 @@ function TradingCard({
         <CardBack hidden={faceUp} />
         <CardFront position={position} asset={asset} hidden={!faceUp} />
       </div>
+      <span aria-hidden="true" className="draw-card__reveal-glow" />
     </div>
   )
 }
@@ -258,12 +248,14 @@ export function NftCardScene({
   onRevealReady,
 }: NftCardSceneProps) {
   const reducedMotion = useMemo(prefersReducedMotion, [])
+  const finePointer = useMemo(hasFinePointer, [])
   const [faceUp, setFaceUp] = useState(stage === "revealed" || stage === "settled")
-  const [dragX, setDragX] = useState(0)
   const [throwDirection, setThrowDirection] = useState<-1 | 0 | 1>(0)
   const dragRef = useRef<DragState | null>(null)
   const throwingRef = useRef(false)
+  const pointerFrameRef = useRef<number | null>(null)
   const pointerIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const returnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const throwTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastCycleRequestRef = useRef(0)
@@ -280,47 +272,69 @@ export function NftCardScene({
   const showFront = stage === "revealed" || stage === "settled" || (canInspect && faceUp)
 
   const resetCardPointer = useCallback((card: HTMLDivElement) => {
+    if (pointerFrameRef.current !== null) cancelAnimationFrame(pointerFrameRef.current)
+    pointerFrameRef.current = null
     if (pointerIdleTimerRef.current) clearTimeout(pointerIdleTimerRef.current)
     pointerIdleTimerRef.current = null
     card.classList.remove("is-pointer-active")
-    card.style.setProperty("--pointer-x", "50%")
-    card.style.setProperty("--pointer-y", "50%")
-    card.style.setProperty("--background-x", "50%")
-    card.style.setProperty("--background-y", "50%")
-    card.style.setProperty("--pointer-distance", "0")
-    card.style.setProperty("--tilt-x", "0deg")
-    card.style.setProperty("--tilt-y", "0deg")
+    card.querySelector<HTMLElement>(".draw-card__rotator")?.style.removeProperty("transform")
+    card
+      .querySelectorAll<HTMLElement>(
+        ".draw-card__texture, .draw-card__shine, .draw-card__glare, .draw-card__art-foil",
+      )
+      .forEach((element) => {
+        element.style.removeProperty("--pointer-x")
+        element.style.removeProperty("--pointer-y")
+        element.style.removeProperty("--background-x")
+        element.style.removeProperty("--background-y")
+        element.style.removeProperty("--pointer-distance")
+      })
   }, [])
 
   const updateCardPointer = useCallback(
-    (card: HTMLDivElement, clientX: number, clientY: number) => {
-      if (reducedMotion) return
-      card.classList.add("is-pointer-active")
+    (card: HTMLDivElement, clientX: number, clientY: number, pointerType: string) => {
+      if (reducedMotion || !finePointer || pointerType !== "mouse") return
       const rect = card.getBoundingClientRect()
       const x = clamp((clientX - rect.left) / rect.width, 0, 1)
       const y = clamp((clientY - rect.top) / rect.height, 0, 1)
       const fromCenterX = x - 0.5
       const fromCenterY = y - 0.5
       const distance = clamp(Math.hypot(fromCenterX, fromCenterY) / 0.707, 0, 1)
-      card.style.setProperty("--pointer-x", `${(x * 100).toFixed(2)}%`)
-      card.style.setProperty("--pointer-y", `${(y * 100).toFixed(2)}%`)
-      card.style.setProperty("--background-x", `${(32 + x * 36).toFixed(2)}%`)
-      card.style.setProperty("--background-y", `${(32 + y * 36).toFixed(2)}%`)
-      card.style.setProperty("--pointer-distance", distance.toFixed(3))
-      card.style.setProperty("--tilt-x", `${(-fromCenterY * 14).toFixed(2)}deg`)
-      card.style.setProperty("--tilt-y", `${(fromCenterX * 16).toFixed(2)}deg`)
+      if (pointerFrameRef.current !== null) cancelAnimationFrame(pointerFrameRef.current)
+      pointerFrameRef.current = requestAnimationFrame(() => {
+        pointerFrameRef.current = null
+        card.classList.add("is-pointer-active")
+        const tiltX = -fromCenterY * 5
+        const tiltY = fromCenterX * 6
+        const rotationY = card.classList.contains("is-face-up") ? tiltY : 180 + tiltY
+        const rotator = card.querySelector<HTMLElement>(".draw-card__rotator")
+        if (rotator) {
+          rotator.style.transform = `rotateX(${tiltX.toFixed(2)}deg) rotateY(${rotationY.toFixed(2)}deg)`
+        }
+        card
+          .querySelectorAll<HTMLElement>(
+            ".draw-card__texture, .draw-card__shine, .draw-card__glare, .draw-card__art-foil",
+          )
+          .forEach((element) => {
+            element.style.setProperty("--pointer-x", `${(x * 100).toFixed(2)}%`)
+            element.style.setProperty("--pointer-y", `${(y * 100).toFixed(2)}%`)
+            element.style.setProperty("--background-x", `${(32 + x * 36).toFixed(2)}%`)
+            element.style.setProperty("--background-y", `${(32 + y * 36).toFixed(2)}%`)
+            element.style.setProperty("--pointer-distance", distance.toFixed(3))
+          })
+      })
       if (pointerIdleTimerRef.current) clearTimeout(pointerIdleTimerRef.current)
       pointerIdleTimerRef.current = setTimeout(() => resetCardPointer(card), POINTER_IDLE_MS)
     },
-    [reducedMotion, resetCardPointer],
+    [finePointer, reducedMotion, resetCardPointer],
   )
 
   const throwCard = useCallback(
-    (direction: -1 | 1) => {
+    (direction: -1 | 1, animate = true, preserveDrag = false) => {
       if (!canInspect || throwingRef.current || positions.length < 2) return
       throwingRef.current = true
-      setThrowDirection(direction)
-      setDragX(0)
+      const activeCard = activeCardRef.current
+      if (!preserveDrag && activeCard) setCardDrag(activeCard, 0)
       setFaceUp(false)
       onInspectionChange?.(false)
       spinAudio.prepare()
@@ -328,15 +342,17 @@ export function NftCardScene({
       spinAudio.settle()
 
       const finish = () => {
+        if (activeCard) setCardDrag(activeCard, 0)
         onSelect(wrapIndex(activeIndex + direction, positions.length))
         setThrowDirection(0)
         throwingRef.current = false
       }
 
-      if (reducedMotion) {
+      if (reducedMotion || !animate) {
         finish()
         return
       }
+      setThrowDirection(direction)
       throwTimerRef.current = setTimeout(finish, THROW_DURATION_MS)
     },
     [activeIndex, canInspect, onInspectionChange, onSelect, positions.length, reducedMotion],
@@ -344,7 +360,17 @@ export function NftCardScene({
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!canInspect || throwingRef.current) return
+      if (
+        !canInspect ||
+        throwingRef.current ||
+        dragRef.current ||
+        !event.isPrimary ||
+        event.button !== 0
+      )
+        return
+      if (returnTimerRef.current) clearTimeout(returnTimerRef.current)
+      event.currentTarget.classList.remove("is-returning")
+      event.currentTarget.classList.add("is-dragging")
       event.currentTarget.focus()
       event.currentTarget.setPointerCapture(event.pointerId)
       dragRef.current = {
@@ -354,21 +380,21 @@ export function NftCardScene({
         moved: false,
       }
       spinAudio.prepare()
-      updateCardPointer(event.currentTarget, event.clientX, event.clientY)
+      updateCardPointer(event.currentTarget, event.clientX, event.clientY, event.pointerType)
     },
     [canInspect, updateCardPointer],
   )
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      updateCardPointer(event.currentTarget, event.clientX, event.clientY)
+      updateCardPointer(event.currentTarget, event.clientX, event.clientY, event.pointerType)
       const drag = dragRef.current
       if (!drag || drag.pointerId !== event.pointerId) return
       const distance = event.clientX - drag.startX
       drag.moved ||= Math.abs(distance) > 5
       drag.samples.push({ x: event.clientX, time: performance.now() })
       if (drag.samples.length > 12) drag.samples.shift()
-      setDragX(distance)
+      setCardDrag(event.currentTarget, rubberBandDrag(distance, DECK_COMMIT_DISTANCE_PX))
     },
     [updateCardPointer],
   )
@@ -378,6 +404,7 @@ export function NftCardScene({
       const drag = dragRef.current
       if (!drag || drag.pointerId !== event.pointerId) return
       dragRef.current = null
+      event.currentTarget.classList.remove("is-dragging")
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId)
       }
@@ -388,14 +415,21 @@ export function NftCardScene({
         releaseVelocity(drag.samples),
         DECK_COMMIT_DISTANCE_PX,
       )
-      setDragX(0)
       resetCardPointer(event.currentTarget)
 
       if (!cancelled && release.commit) {
-        throwCard(release.direction)
-      } else if (!cancelled && !drag.moved) {
-        setFaceUp((current) => !current)
+        throwCard(release.direction, true, true)
+        return
       }
+
+      const card = event.currentTarget
+      card.classList.add("is-returning")
+      requestAnimationFrame(() => setCardDrag(card, 0))
+      returnTimerRef.current = setTimeout(
+        () => card.classList.remove("is-returning"),
+        RETURN_DURATION_MS,
+      )
+      if (!cancelled && !drag.moved) setFaceUp((current) => !current)
     },
     [resetCardPointer, throwCard],
   )
@@ -410,7 +444,7 @@ export function NftCardScene({
   useEffect(() => {
     if (!cycleRequest || cycleRequest.id === lastCycleRequestRef.current) return
     lastCycleRequestRef.current = cycleRequest.id
-    throwCard(cycleRequest.direction)
+    throwCard(cycleRequest.direction, cycleRequest.animate)
   }, [cycleRequest, throwCard])
 
   useEffect(() => {
@@ -422,13 +456,17 @@ export function NftCardScene({
 
   useEffect(() => {
     if (stage === "drawing") {
+      if (activeCardRef.current) {
+        resetCardPointer(activeCardRef.current)
+        setCardDrag(activeCardRef.current, 0)
+      }
       setFaceUp(false)
       revealAnnouncedRef.current = false
       onInspectionChange?.(false)
       return
     }
     if (stage === "revealed" || stage === "settled") setFaceUp(true)
-  }, [onInspectionChange, stage])
+  }, [onInspectionChange, resetCardPointer, stage])
 
   useEffect(() => {
     if (stage !== "revealed" || revealAnnouncedRef.current) return
@@ -450,6 +488,8 @@ export function NftCardScene({
       if (throwTimerRef.current) clearTimeout(throwTimerRef.current)
       if (revealTimerRef.current) clearTimeout(revealTimerRef.current)
       if (pointerIdleTimerRef.current) clearTimeout(pointerIdleTimerRef.current)
+      if (returnTimerRef.current) clearTimeout(returnTimerRef.current)
+      if (pointerFrameRef.current !== null) cancelAnimationFrame(pointerFrameRef.current)
       spinAudio.stop()
     },
     [],
@@ -508,10 +548,11 @@ export function NftCardScene({
               accent={selectedPosition.accent || market.accent}
               faceUp={showFront}
               stackIndex={0}
-              dragX={dragX}
               interactive={canInspect}
               elementRef={activeCardRef}
-              className={`${throwDirection ? `is-throwing-${throwDirection < 0 ? "left" : "right"}` : ""} ${dragRef.current ? "is-dragging" : ""}`}
+              className={
+                throwDirection ? `is-throwing-${throwDirection < 0 ? "left" : "right"}` : ""
+              }
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={(event) => finishPointer(event)}

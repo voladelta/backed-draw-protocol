@@ -462,8 +462,7 @@ summary:focus-visible,
   box-shadow: 0 8px 30px rgba(202, 255, 58, 0.12);
   transition:
     transform 0.15s ease-out,
-    background 0.15s ease-out,
-    box-shadow 0.15s ease-out;
+    background 0.15s ease-out;
 }
 .pull-cta:hover {
   background: #dcff7a;
@@ -488,11 +487,6 @@ summary:focus-visible,
 .command-foot svg {
   width: 12px;
   color: var(--lime);
-}
-.command-error {
-  margin: 12px 0 -6px;
-  color: #f6a8a8;
-  font-size: 13px;
 }
 .command-locked {
   min-height: 225px;
@@ -551,6 +545,45 @@ summary:focus-visible,
   margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.pull-command--enter {
+  animation: pull-command-enter 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.artifact-stage-copy--enter {
+  animation: artifact-stage-copy-enter 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+@keyframes pull-command-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes artifact-stage-copy-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes interface-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .command-state {
   min-height: 318px;
@@ -2193,8 +2226,7 @@ summary:focus-visible,
     grid-column: 1 / -1;
   }
   .pull-cta,
-  .command-foot,
-  .command-error {
+  .command-foot {
     grid-column: 1 / -1;
   }
   .reveal-state {
@@ -2581,7 +2613,7 @@ summary:focus-visible,
 .support-market,
 .reward-stat,
 .activity-summary > div {
-  transition-property: border-color, box-shadow, transform;
+  transition-property: border-color, transform;
   transition-duration: 180ms;
   transition-timing-function: ease-out;
 }
@@ -2684,13 +2716,40 @@ summary:focus-visible,
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  html {
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
+  }
+  .pull-command--enter,
+  .artifact-stage-copy--enter {
+    animation: interface-fade-in 140ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+  .wallet-button:active,
+  .pool-tabs button:active,
+  .settlement-actions button:active,
+  .count-control button:active,
+  .pull-cta:active,
+  .asset-switch button:active,
+  .command-state > button:active,
+  .backer-overview div button:active,
+  .support-market button:active,
+  .info-banner button:active,
+  .backer-tip button:active,
+  .reward-spotlight button:active,
+  .market-detail button:active,
+  .position-actions button:active {
+    transform: none;
+  }
+  .pool-tile > img,
+  .support-market,
+  .reward-stat,
+  .activity-summary > div {
+    transform: none !important;
+  }
+  .artifact-pips button,
+  .artifact-pips button.is-active,
+  .pool-tabs button::after,
+  .pool-tabs button.is-active::after {
+    transform: scaleX(1);
   }
 }
 @media (forced-colors: active) {

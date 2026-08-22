@@ -28,11 +28,27 @@ import { formatValue } from "@/lib/utils"
 import type { Market, Position, PullStage, SettlementAsset } from "@/types/protocol"
 import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/contracts"
 import type { DeckCycleRequest } from "@/components/nft/nft-card-scene"
+import { breakpoints, motion } from "../../styles/tokens.stylex"
 
 const NftCardScene = lazy(() =>
   import("@/components/nft/nft-card-scene").then((module) => ({ default: module.NftCardScene })),
 )
 const shortenWallet = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
+
+const fadeIn = stylex.keyframes({
+  from: { opacity: 0 },
+  to: { opacity: 1 },
+})
+
+const scaleIn = stylex.keyframes({
+  from: { opacity: 0, transform: "scale(0.97)" },
+  to: { opacity: 1, transform: "scale(1)" },
+})
+
+const dropIn = stylex.keyframes({
+  from: { opacity: 0, transform: "translateY(-4px)" },
+  to: { opacity: 1, transform: "translateY(0)" },
+})
 
 const accessibilityStyles = stylex.create({
   visuallyHidden: {
@@ -45,6 +61,43 @@ const accessibilityStyles = stylex.create({
     clip: "rect(0, 0, 0, 0)",
     whiteSpace: "nowrap",
     borderWidth: 0,
+  },
+})
+
+const motionStyles = stylex.create({
+  revealAction: {
+    animationName: {
+      default: scaleIn,
+      [breakpoints.reducedMotion]: fadeIn,
+    },
+    animationDuration: {
+      default: motion.feedbackDuration,
+      [breakpoints.reducedMotion]: motion.reducedEnterDuration,
+    },
+    animationTimingFunction: motion.easeOut,
+    animationFillMode: "both",
+  },
+  commandError: {
+    gridColumn: {
+      default: null,
+      "@media (max-width: 1100px)": "1 / -1",
+    },
+    marginTop: 12,
+    marginRight: 0,
+    marginBottom: -6,
+    marginLeft: 0,
+    color: "#f6a8a8",
+    fontSize: 13,
+    animationName: {
+      default: dropIn,
+      [breakpoints.reducedMotion]: fadeIn,
+    },
+    animationDuration: {
+      default: motion.feedbackDuration,
+      [breakpoints.reducedMotion]: motion.reducedEnterDuration,
+    },
+    animationTimingFunction: motion.easeOut,
+    animationFillMode: "both",
   },
 })
 
@@ -207,9 +260,9 @@ function StageArtifact({
       : ((activeIndex % market.positions.length) + market.positions.length) %
         market.positions.length
   const selectedPosition = market.positions[selectedIndex]
-  const cycleCard = (direction: -1 | 1) => {
+  const cycleCard = (direction: -1 | 1, animate = true) => {
     spinAudio.prepare()
-    setCycleRequest((current) => ({ id: current.id + 1, direction }))
+    setCycleRequest((current) => ({ id: current.id + 1, direction, animate }))
   }
   return (
     <section
@@ -250,11 +303,11 @@ function StageArtifact({
             if (stage !== "configure") return
             if (event.key === "ArrowLeft") {
               event.preventDefault()
-              cycleCard(-1)
+              cycleCard(-1, false)
             }
             if (event.key === "ArrowRight") {
               event.preventDefault()
-              cycleCard(1)
+              cycleCard(1, false)
             }
           }}
           role={stage === "configure" ? "group" : undefined}
@@ -277,7 +330,7 @@ function StageArtifact({
             <div className="arena-spin-controls">
               <button
                 aria-label="Move the top card around the left side to the back"
-                onClick={() => cycleCard(-1)}
+                onClick={(event) => cycleCard(-1, event.detail !== 0)}
                 type="button"
               >
                 <ChevronLeft aria-hidden="true" />
@@ -287,7 +340,7 @@ function StageArtifact({
               </span>
               <button
                 aria-label="Move the top card around the right side to the back"
-                onClick={() => cycleCard(1)}
+                onClick={(event) => cycleCard(1, event.detail !== 0)}
                 type="button"
               >
                 <ChevronRight aria-hidden="true" />
@@ -305,7 +358,7 @@ function StageArtifact({
             </div>
           </>
         ) : (
-          <div className="artifact-stage-copy">
+          <div className="artifact-stage-copy artifact-stage-copy--enter" key={stage}>
             <p>
               {stage === "drawing"
                 ? "Randomness requested"
@@ -437,7 +490,11 @@ function PullCommand({
   }
   if (stage === "drawing")
     return (
-      <aside aria-live="polite" className="pull-command command-state">
+      <aside
+        aria-live="polite"
+        className="pull-command command-state pull-command--enter"
+        key={stage}
+      >
         <Dices />
         <p>{livePending ? "Pull order submitted" : "Randomness requested"}</p>
         <h2>{livePending ? "Waiting for epoch result…" : "Shuffling your pack…"}</h2>
@@ -451,7 +508,11 @@ function PullCommand({
           )}
         </small>
         {!livePending && previewRevealReady ? (
-          <button onClick={revealPreviewNow} type="button">
+          <button
+            {...stylex.props(motionStyles.revealAction)}
+            onClick={revealPreviewNow}
+            type="button"
+          >
             Reveal now <ChevronDown />
           </button>
         ) : null}
@@ -459,7 +520,11 @@ function PullCommand({
     )
   if (stage === "revealed" && position)
     return (
-      <aside aria-labelledby="settlement-heading" className="pull-command settlement-command">
+      <aside
+        aria-labelledby="settlement-heading"
+        className="pull-command settlement-command pull-command--enter"
+        key={stage}
+      >
         <div className="command-heading">
           <div>
             <p>Choose settlement</p>
@@ -483,7 +548,11 @@ function PullCommand({
             ? "Position relisted"
             : "Collectible secured"
     return (
-      <aside aria-live="polite" className="pull-command command-state settlement-done">
+      <aside
+        aria-live="polite"
+        className="pull-command command-state settlement-done pull-command--enter"
+        key={stage}
+      >
         <CircleCheck />
         <p>Pull complete</p>
         <h2>{label}</h2>
@@ -495,7 +564,11 @@ function PullCommand({
     )
   }
   return (
-    <aside className="pull-command" aria-label="Configure your pull">
+    <aside
+      className="pull-command pull-command--enter"
+      aria-label="Configure your pull"
+      key={stage}
+    >
       <div className="command-heading">
         <div>
           <p>Your pull</p>
@@ -569,7 +642,7 @@ function PullCommand({
         </small>
       </div>
       {error ? (
-        <p className="command-error" id="pull-error" role="alert">
+        <p {...stylex.props(motionStyles.commandError)} id="pull-error" role="alert">
           Unable to submit the pull. {error}
         </p>
       ) : null}

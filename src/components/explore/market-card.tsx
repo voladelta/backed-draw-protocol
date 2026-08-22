@@ -29,14 +29,8 @@ const styles = stylex.create({
     height: "100%",
     flexDirection: "column",
     overflow: "hidden",
-    borderColor: { default: "rgba(255,255,255,0.09)", ":hover": "rgba(190,242,100,0.25)" },
-    boxShadow: {
-      default: "0 16px 50px rgba(0,0,0,0.18)",
-      ":hover": "0 22px 60px rgba(0,0,0,0.35)",
-    },
-    transitionProperty: "border-color, box-shadow",
-    transitionDuration: "200ms",
-    transitionTimingFunction: "ease-out",
+    borderColor: "rgba(255,255,255,0.09)",
+    boxShadow: "0 16px 50px rgba(0,0,0,0.18)",
   },
   body: { display: "flex", flex: 1, flexDirection: "column", padding: 20 },
   headingRow: {

@@ -27,3 +27,9 @@ export const breakpoints = stylex.defineConsts({
   xl: "@media (min-width: 1280px)",
   reducedMotion: "@media (prefers-reduced-motion: reduce)",
 })
+
+export const motion = stylex.defineConsts({
+  easeOut: "cubic-bezier(0.23, 1, 0.32, 1)",
+  feedbackDuration: "160ms",
+  reducedEnterDuration: "140ms",
+})

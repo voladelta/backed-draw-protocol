@@ -2,7 +2,7 @@ import * as stylex from "@stylexjs/stylex"
 import type { StyleXStyles } from "@stylexjs/stylex"
 import type { ButtonHTMLAttributes, ReactNode } from "react"
 
-import { breakpoints, colors } from "../../styles/tokens.stylex"
+import { breakpoints, colors, motion } from "../../styles/tokens.stylex"
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "outline" | "danger"
 type ButtonSize = "sm" | "md" | "lg" | "icon"
@@ -31,11 +31,8 @@ const styles = stylex.create({
     fontWeight: 600,
     letterSpacing: "-0.01em",
     transitionProperty: "transform, background-color, border-color, color, box-shadow",
-    transitionDuration: {
-      default: "150ms",
-      [breakpoints.reducedMotion]: "0.01ms",
-    },
-    transitionTimingFunction: "ease-out",
+    transitionDuration: "150ms",
+    transitionTimingFunction: motion.easeOut,
     pointerEvents: { default: "auto", ":disabled": "none" },
     cursor: { default: "pointer", ":disabled": "not-allowed" },
     opacity: { default: 1, ":disabled": 0.45 },
@@ -43,7 +40,11 @@ const styles = stylex.create({
     outlineOffset: { default: 0, ":focus-visible": 2 },
   },
   motion: {
-    transform: { default: "scale(1)", ":active": "scale(0.96)" },
+    transform: {
+      default: "scale(1)",
+      ":active": "scale(0.96)",
+      [breakpoints.reducedMotion]: "none",
+    },
   },
   primary: {
     borderWidth: 1,
@@ -92,9 +93,15 @@ const styles = stylex.create({
     borderColor: "currentColor",
     borderTopColor: "transparent",
     animationName: spin,
-    animationDuration: "1s",
+    animationDuration: {
+      default: "1s",
+      [breakpoints.reducedMotion]: "0.01ms",
+    },
     animationTimingFunction: "linear",
-    animationIterationCount: "infinite",
+    animationIterationCount: {
+      default: "infinite",
+      [breakpoints.reducedMotion]: "1",
+    },
   },
 })
 

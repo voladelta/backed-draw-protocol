@@ -15,6 +15,12 @@ export const deckOrder = (length: number, activeIndex: number) =>
 export const projectDrag = (distance: number, velocity: number, projectionSeconds = 0.12) =>
   distance + velocity * projectionSeconds
 
+export const rubberBandDrag = (distance: number, boundary = 72, resistance = 0.35) => {
+  const magnitude = Math.abs(distance)
+  if (magnitude <= boundary) return distance
+  return Math.sign(distance) * (boundary + (magnitude - boundary) * resistance)
+}
+
 export function resolveDeckRelease(
   distance: number,
   velocity: number,

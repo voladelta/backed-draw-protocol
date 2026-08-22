@@ -22,6 +22,8 @@ contract SettlementEngine is ReentrancyGuard {
     error InvalidSettlementClaimReceiver();
     error NFTClaimAlreadyExists();
     error SolvencyInvariantBroken(uint256 assets, uint256 liabilities);
+    error OnlySelf();
+    error RewardEnqueueMismatch(uint256 expected, uint256 actual);
 
     uint256 public constant BPS = 10_000;
     uint256 public constant KEEP_PAYOUT_BPS = 9_900;
@@ -81,6 +83,8 @@ contract SettlementEngine is ReentrancyGuard {
     );
     event SettlementPayoutAccrued(address indexed claimOwner, uint256 amount);
     event SettlementPayoutClaimed(address indexed claimOwner, address indexed receiver, uint256 amount);
+    event RewardFundingDeferred(address indexed beneficiary, uint256 amount);
+    event DrawSettlementDeferred(address indexed beneficiary, uint256 amount);
 
     constructor(
         address market_,
@@ -204,10 +208,14 @@ contract SettlementEngine is ReentrancyGuard {
         delete selectedPositions[receiptId];
         IMarketSettlementCallback(market).finalizeSelectedPosition(data.positionId);
         _fundRewardInput(position);
-        vault.releaseSettlement(address(rewardController), rewardAmount);
-        drawAmount = rewardController.swapSettlement(
-            msg.sender, settlementAsset, rewardAmount, minDrawOut, routeData
-        );
+        try this.dispatchSettlementReward(msg.sender, rewardAmount, minDrawOut, routeData) returns (
+            uint256 amountOut
+        ) {
+            drawAmount = amountOut;
+        } catch {
+            _accrueSettlementClaim(msg.sender, rewardAmount);
+            emit DrawSettlementDeferred(msg.sender, rewardAmount);
+        }
         _deliverOrDeferNFT(position.previousOwner, position.collection, position.tokenId);
         _assertSolvent();
     }
@@ -329,10 +337,41 @@ contract SettlementEngine is ReentrancyGuard {
     }
 
     function _fundRewardInput(SelectedPosition memory position) private {
-        if (position.rewardInput != 0) {
-            vault.releaseSettlement(address(rewardController), position.rewardInput);
-            rewardController.enqueue(position.earningsRecipient, settlementAsset, position.rewardInput);
+        if (position.rewardInput == 0) return;
+        try this.dispatchReward(position.earningsRecipient, position.rewardInput) { }
+        catch {
+            _accrueSettlementClaim(position.earningsRecipient, position.rewardInput);
+            emit RewardFundingDeferred(position.earningsRecipient, position.rewardInput);
         }
+    }
+
+    function dispatchReward(address beneficiary, uint256 amount) external {
+        if (msg.sender != address(this)) revert OnlySelf();
+        _dispatchReward(beneficiary, amount);
+    }
+
+    function dispatchMarketReward(address beneficiary, uint256 amount) external onlyMarket nonReentrant {
+        _dispatchReward(beneficiary, amount);
+    }
+
+    function _dispatchReward(address beneficiary, uint256 amount) private {
+        uint256 queuedBefore = rewardController.queuedInput(beneficiary, settlementAsset);
+        vault.releaseSettlement(address(rewardController), amount);
+        rewardController.enqueue(beneficiary, settlementAsset, amount);
+        uint256 queuedAfter = rewardController.queuedInput(beneficiary, settlementAsset);
+        uint256 expected = queuedBefore + amount;
+        if (queuedAfter != expected) revert RewardEnqueueMismatch(expected, queuedAfter);
+    }
+
+    function dispatchSettlementReward(
+        address beneficiary,
+        uint256 amount,
+        uint256 minDrawOut,
+        bytes calldata routeData
+    ) external returns (uint256 drawAmount) {
+        if (msg.sender != address(this)) revert OnlySelf();
+        vault.releaseSettlement(address(rewardController), amount);
+        return rewardController.swapSettlement(beneficiary, settlementAsset, amount, minDrawOut, routeData);
     }
 
     function _accrueSettlementClaim(address claimOwner, uint256 amount) private {

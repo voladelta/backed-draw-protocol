@@ -218,6 +218,32 @@ contract DrawMarketTest is Test {
         assertEq(market.crownPositionId(), 2);
     }
 
+    function testImmediateWithdrawalDefersRewardWhenControllerRejectsEnqueue() external {
+        _drawOne(707);
+        ProtocolTypes.PullReceiptData memory receipt =
+            PullReceipt(address(engine.pullReceipt())).receiptData(1);
+        uint256 positionId = receipt.positionId == 1 ? 2 : 1;
+        address owner = positionId == 1 ? alice : bob;
+        (, uint256 rewardInput) = market.pendingPositionEarnings(positionId);
+        rewards.setRejectEnqueue(true);
+
+        vm.prank(owner);
+        market.requestWithdrawal(positionId);
+
+        assertGt(rewardInput, 0);
+        assertEq(market.settlementClaims(owner), rewardInput);
+        assertEq(market.settlementClaimLiability(), rewardInput);
+        assertEq(rewards.queued(owner, address(asset)), 0);
+        assertEq(collection.ownerOf(positionId), owner);
+        assertTrue(market.solvent());
+
+        uint256 balanceBefore = asset.balanceOf(owner);
+        vm.prank(owner);
+        market.claimSettlement();
+        assertEq(asset.balanceOf(owner) - balanceBefore, rewardInput);
+        assertEq(market.settlementClaims(owner), 0);
+    }
+
     function testSelectedCrownIsReassignedBeforeEpochFinishes() external {
         uint256 price = market.currentPullPrice();
         _request(price, 2);

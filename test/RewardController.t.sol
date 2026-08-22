@@ -9,9 +9,15 @@ import { MockERC20 } from "./mocks/MockERC20.sol";
 
 contract RewardControllerSwapAdapter is ISwapAdapter {
     uint256 public amountOut;
+    uint256 public reportedAmountOut;
 
     function setAmountOut(uint256 amount) external {
         amountOut = amount;
+        reportedAmountOut = amount;
+    }
+
+    function setReportedAmountOut(uint256 amount) external {
+        reportedAmountOut = amount;
     }
 
     function swapExactOutput(address, address, uint256, uint256, address, bytes calldata)
@@ -32,7 +38,7 @@ contract RewardControllerSwapAdapter is ISwapAdapter {
     ) external returns (uint256) {
         require(IERC20(inputAsset).transferFrom(msg.sender, address(this), amountIn));
         MockERC20(outputAsset).mint(receiver, amountOut);
-        return amountOut;
+        return reportedAmountOut;
     }
 }
 
@@ -55,6 +61,8 @@ contract RewardControllerTest is Test {
     function testSettlementSwapDeliversProtectedDrawOutput() external {
         input.mint(address(controller), 85 ether);
         adapter.setAmountOut(90 ether);
+        vm.prank(address(controller));
+        input.approve(address(adapter), 1 ether);
 
         uint256 drawAmount =
             controller.swapSettlement(beneficiary, address(input), 85 ether, 89 ether, hex"1234");
@@ -77,6 +85,53 @@ contract RewardControllerTest is Test {
         assertEq(input.balanceOf(address(controller)), 85 ether);
         assertEq(input.balanceOf(address(adapter)), 0);
         assertEq(draw.balanceOf(beneficiary), 0);
+    }
+
+    function testSettlementSwapRejectsAdapterThatReportsOutputWithoutDeliveringIt() external {
+        input.mint(address(controller), 85 ether);
+        adapter.setAmountOut(0);
+        adapter.setReportedAmountOut(100 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(RewardController.SlippageExceeded.selector, 0, 80 ether));
+        controller.swapSettlement(beneficiary, address(input), 85 ether, 80 ether, "");
+
+        assertEq(input.balanceOf(address(controller)), 85 ether);
+        assertEq(input.balanceOf(address(adapter)), 0);
+        assertEq(draw.balanceOf(beneficiary), 0);
+    }
+
+    function testClaimUsesActualReceiverOutputAndClearsStaleAllowance() external {
+        input.mint(address(controller), 10 ether);
+        controller.enqueue(beneficiary, address(input), 10 ether);
+        adapter.setAmountOut(9 ether);
+        adapter.setReportedAmountOut(type(uint256).max);
+        vm.prank(address(controller));
+        input.approve(address(adapter), 1 ether);
+
+        vm.prank(beneficiary);
+        uint256 amountOut = controller.claim(address(input), 8 ether, beneficiary, "");
+
+        assertEq(amountOut, 9 ether);
+        assertEq(draw.balanceOf(beneficiary), 9 ether);
+        assertEq(input.allowance(address(controller), address(adapter)), 0);
+        assertEq(controller.queuedInput(beneficiary, address(input)), 0);
+        assertEq(controller.totalQueued(address(input)), 0);
+    }
+
+    function testClaimRejectsLyingNoOutputAdapterWithoutConsumingEntitlement() external {
+        input.mint(address(controller), 10 ether);
+        controller.enqueue(beneficiary, address(input), 10 ether);
+        adapter.setAmountOut(0);
+        adapter.setReportedAmountOut(10 ether);
+
+        vm.prank(beneficiary);
+        vm.expectRevert(abi.encodeWithSelector(RewardController.SlippageExceeded.selector, 0, 1 ether));
+        controller.claim(address(input), 1 ether, beneficiary, "");
+
+        assertEq(controller.queuedInput(beneficiary, address(input)), 10 ether);
+        assertEq(controller.totalQueued(address(input)), 10 ether);
+        assertEq(input.balanceOf(address(controller)), 10 ether);
+        assertEq(input.balanceOf(address(adapter)), 0);
     }
 
     function testSettlementSwapCannotSpendQueuedRewardInput() external {

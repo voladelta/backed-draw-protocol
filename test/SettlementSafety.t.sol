@@ -8,6 +8,7 @@ import { IERC721Receiver } from "@openzeppelin/contracts/token/ERC721/IERC721Rec
 import { Clones } from "@openzeppelin/contracts/proxy/Clones.sol";
 import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import { DrawMarket } from "../contracts/DrawMarket.sol";
+import { RewardController } from "../contracts/RewardController.sol";
 import { ReferralRegistry } from "../contracts/ReferralRegistry.sol";
 import { ProtocolRegistry } from "../contracts/ProtocolRegistry.sol";
 import { SettlementEngine } from "../contracts/SettlementEngine.sol";
@@ -18,6 +19,7 @@ import { MarketVault } from "../contracts/MarketVault.sol";
 import { ProtocolTypes } from "../contracts/types/ProtocolTypes.sol";
 import { IEligibilityPolicy } from "../contracts/interfaces/IEligibilityPolicy.sol";
 import { MockDenylistERC20 } from "./mocks/MockDenylistERC20.sol";
+import { MockERC20 } from "./mocks/MockERC20.sol";
 import { MockERC721 } from "./mocks/MockERC721.sol";
 import { MockRandomnessAdapter } from "./mocks/MockRandomnessAdapter.sol";
 import { MockRewardController } from "./mocks/MockRewardController.sol";
@@ -44,6 +46,10 @@ contract SettlementSafetyRejectingReceiver is IERC721Receiver {
 
     function settleKeep(SettlementEngine engine, uint256 receiptId) external {
         engine.settleKeep(receiptId);
+    }
+
+    function requestWithdrawal(DrawMarket market, uint256 positionId, address nftReceiver) external {
+        market.requestWithdrawal(positionId, nftReceiver);
     }
 
     function claimNFT(SettlementEngine engine, address collection, uint256 tokenId, address receiver)
@@ -249,31 +255,175 @@ contract SettlementSafetyTest is Test {
         _assertSettledWithClaim(alice, 99 ether + cashEarnings);
     }
 
-    function testProtectedDrawSwapFailureLeavesReceiptUnconsumedForCashRetry() external {
+    function testProtectedDrawSwapFailureDefersSettlementAssetAndFinalizesReceipt() external {
         _deployMarket(address(0), 1_000 ether, buyback);
         _deposit(alice, 1, 100 ether);
         _drawOne(buyer, 146);
-        uint256 liabilitiesBefore = engine.totalLiabilities();
         rewards.setRejectSettlementSwap(true);
 
         vm.prank(buyer);
-        vm.expectRevert(MockRewardController.SettlementSwapRejected.selector);
         engine.settleDraw(1, 85 ether, hex"deadbeef");
 
-        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Revealed));
+        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
         (,,,, uint128 backing,,) = engine.selectedPositions(1);
-        assertEq(backing, 100 ether);
-        assertEq(engine.selectedBackingLiability(), 100 ether);
-        assertEq(engine.totalLiabilities(), liabilitiesBefore);
+        assertEq(backing, 0);
+        assertEq(engine.selectedBackingLiability(), 0);
+        assertEq(engine.settlementClaims(buyer), 85 ether);
         assertEq(rewards.settlementInput(buyer, address(asset)), 0);
-        assertEq(asset.balanceOf(address(rewards)), 0);
-        assertEq(collection.ownerOf(1), address(vault));
+        assertEq(collection.ownerOf(1), alice);
 
-        rewards.setRejectSettlementSwap(false);
+        uint256 buyerBefore = asset.balanceOf(buyer);
+        vm.prank(buyer);
+        engine.claimSettlement(buyer);
+        assertEq(asset.balanceOf(buyer) - buyerBefore, 85 ether);
+    }
+
+    function testRewardControllerFailureCannotBlockKeep() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 201);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        rewards.setRejectEnqueue(true);
+
+        vm.prank(buyer);
+        engine.settleKeep(1);
+
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), 99 ether + cashEarnings + rewardInput);
+        assertEq(rewards.queued(alice, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertTrue(market.solvent());
+    }
+
+    function testRewardControllerFailureCannotBlockForceKeep() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 202);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        rewards.setRejectEnqueue(true);
+        vm.warp(_receiptData(1).decisionDeadline + 1);
+
+        engine.forceKeep(1);
+
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), 99 ether + cashEarnings + rewardInput);
+        assertEq(rewards.queued(alice, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertTrue(market.solvent());
+    }
+
+    function testRewardControllerFailureCannotBlockCashSettlement() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 203);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        rewards.setRejectEnqueue(true);
+
         vm.prank(buyer);
         engine.settleCash(1);
-        assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
+
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
         assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(rewards.queued(alice, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertTrue(market.solvent());
+    }
+
+    function testSilentRewardEnqueueFailureCannotConsumeFunding() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 207);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        rewards.setIgnoreEnqueue(true);
+
+        vm.prank(buyer);
+        engine.settleCash(1);
+
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
+        assertEq(rewards.queued(alice, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertTrue(market.solvent());
+    }
+
+    function testRevokedRewardMarketRoleCannotBlockCashSettlement() external {
+        MockERC20 draw = new MockERC20("Draw", "DRAW", 18);
+        RewardController revokedRewards = new RewardController(governor, address(draw), address(0));
+        _deployMarketWithRewardController(address(revokedRewards));
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 206);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        bytes32 marketRole = revokedRewards.MARKET_ROLE();
+        vm.startPrank(governor);
+        revokedRewards.grantRole(marketRole, address(engine));
+        revokedRewards.revokeRole(marketRole, address(engine));
+        vm.stopPrank();
+
+        vm.prank(buyer);
+        engine.settleCash(1);
+
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
+        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(asset.balanceOf(address(revokedRewards)), 0);
+        assertEq(collection.ownerOf(1), alice);
+        assertTrue(market.solvent());
+    }
+
+    function testRewardControllerFailureCannotBlockRelistSettlement() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 204);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        rewards.setRejectEnqueue(true);
+
+        vm.prank(buyer);
+        uint256 newPositionId = engine.settleRelist(1, 100 ether);
+
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), 99 ether + cashEarnings + rewardInput);
+        assertEq(market.positionToken().ownerOf(newPositionId), buyer);
+        assertEq(rewards.queued(alice, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertTrue(market.solvent());
+    }
+
+    function testRewardControllerFailuresCannotBlockDrawSettlement() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _drawOne(buyer, 205);
+        (,,,,, uint256 cashEarnings, uint256 rewardInput) = engine.selectedPositions(1);
+        rewards.setRejectEnqueue(true);
+        rewards.setRejectSettlementSwap(true);
+
+        vm.prank(buyer);
+        uint256 drawAmount = engine.settleDraw(1, 85 ether, hex"deadbeef");
+
+        assertEq(drawAmount, 0);
+        assertGt(rewardInput, 0);
+        assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
+        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(rewards.queued(alice, address(asset)), 0);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertEq(collection.ownerOf(1), alice);
+        assertTrue(market.solvent());
+    }
+
+    function testImmediateWithdrawalCanChooseAlternateNFTReceiver() external {
+        SettlementSafetyRejectingReceiver owner = _deployWithRejectingPosition(1);
+
+        vm.prank(governor);
+        vm.expectRevert(abi.encodeWithSelector(DrawMarket.Ineligible.selector, governor));
+        market.requestWithdrawal(1, redirectedReceiver);
+
+        owner.requestWithdrawal(market, 1, redirectedReceiver);
+
+        assertEq(collection.ownerOf(1), redirectedReceiver);
+        assertEq(asset.balanceOf(address(owner)), 100 ether);
+        (,,,,, ProtocolTypes.PositionStatus status,,,,,,) = market.positions(1);
+        assertEq(uint8(status), uint8(ProtocolTypes.PositionStatus.Withdrawn));
     }
 
     function testVaultRejectsUnsolicitedSafeTransferButAcceptsMarketDeposit() external {
@@ -374,11 +524,21 @@ contract SettlementSafetyTest is Test {
 
     function _deployMarket(address policy, uint128 maxBacking, address buybackReceiver) private {
         ProtocolTypes.MarketConfig memory config = _config(policy, maxBacking, buybackReceiver);
+        _deployMarketFromConfig(config);
+    }
+
+    function _deployMarketWithRewardController(address rewardController) private {
+        ProtocolTypes.MarketConfig memory config = _config(address(0), 1_000 ether, buyback);
+        config.rewardController = rewardController;
+        _deployMarketFromConfig(config);
+    }
+
+    function _deployMarketFromConfig(ProtocolTypes.MarketConfig memory config) private {
         _initializeFresh(config);
         bytes32 marketRole = referrals.MARKET_ROLE();
         vm.prank(governor);
         referrals.grantRole(marketRole, address(coordinator));
-        asset.mint(buyer, maxBacking);
+        asset.mint(buyer, config.maxBacking);
         vm.prank(buyer);
         asset.approve(address(vault), type(uint256).max);
     }

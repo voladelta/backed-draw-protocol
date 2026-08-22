@@ -79,11 +79,12 @@ contract RewardController is AccessControl, ReentrancyGuard {
         if (assets < requiredAssets) {
             revert UnfundedInput(inputAsset, assets, requiredAssets);
         }
-        IERC20(inputAsset).forceApprove(address(swapAdapter), inputAmount);
-        drawAmount = swapAdapter.swapExactInput(
-            inputAsset, drawToken, inputAmount, minDrawOut, beneficiary, routeData
-        );
-        IERC20(inputAsset).forceApprove(address(swapAdapter), 0);
+        ISwapAdapter adapter = swapAdapter;
+        uint256 drawBefore = IERC20(drawToken).balanceOf(beneficiary);
+        IERC20(inputAsset).forceApprove(address(adapter), inputAmount);
+        adapter.swapExactInput(inputAsset, drawToken, inputAmount, minDrawOut, beneficiary, routeData);
+        IERC20(inputAsset).forceApprove(address(adapter), 0);
+        drawAmount = IERC20(drawToken).balanceOf(beneficiary) - drawBefore;
         if (drawAmount < minDrawOut) revert SlippageExceeded(drawAmount, minDrawOut);
         emit SettlementRewardPurchased(beneficiary, inputAsset, inputAmount, drawAmount);
     }
@@ -97,9 +98,12 @@ contract RewardController is AccessControl, ReentrancyGuard {
         if (inputAmount == 0) revert ZeroAmount();
         queuedInput[msg.sender][inputAsset] = 0;
         totalQueued[inputAsset] -= inputAmount;
-        IERC20(inputAsset).forceApprove(address(swapAdapter), inputAmount);
-        drawAmount =
-            swapAdapter.swapExactInput(inputAsset, drawToken, inputAmount, minDrawOut, receiver, routeData);
+        ISwapAdapter adapter = swapAdapter;
+        uint256 drawBefore = IERC20(drawToken).balanceOf(receiver);
+        IERC20(inputAsset).forceApprove(address(adapter), inputAmount);
+        adapter.swapExactInput(inputAsset, drawToken, inputAmount, minDrawOut, receiver, routeData);
+        IERC20(inputAsset).forceApprove(address(adapter), 0);
+        drawAmount = IERC20(drawToken).balanceOf(receiver) - drawBefore;
         if (drawAmount < minDrawOut) revert SlippageExceeded(drawAmount, minDrawOut);
         emit RewardClaimed(msg.sender, receiver, inputAsset, inputAmount, drawAmount);
     }

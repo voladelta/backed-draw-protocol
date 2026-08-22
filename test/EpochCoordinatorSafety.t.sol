@@ -90,6 +90,7 @@ contract EpochCoordinatorSafetyReplayingAdapter is IRandomnessAdapter {
 contract EpochCoordinatorSafetyTest is Test {
     using SafeCast for uint256;
 
+    uint32 internal constant COLLECTION_WINDOW = 1 hours;
     uint32 internal constant RANDOMNESS_TIMEOUT = 1 hours;
 
     MockERC20 internal asset;
@@ -112,6 +113,10 @@ contract EpochCoordinatorSafetyTest is Test {
     address internal victim = makeAddr("epoch-safety-victim");
 
     function setUp() external {
+        _setUpMarket(0);
+    }
+
+    function _setUpMarket(uint32 collectionWindow) private {
         asset = new MockERC20("Settlement", "SET", 18);
         collection = new MockERC721();
         randomness = new MockRandomnessAdapter();
@@ -146,7 +151,7 @@ contract EpochCoordinatorSafetyTest is Test {
             maxBacking: 1_000 ether,
             maxActivePositions: 8,
             maxDrawsPerEpoch: 8,
-            collectionWindow: 0,
+            collectionWindow: collectionWindow,
             randomnessTimeout: RANDOMNESS_TIMEOUT,
             decisionWindow: 24 hours,
             markupBps: 1_000
@@ -671,6 +676,64 @@ contract EpochCoordinatorSafetyTest is Test {
         assertEq(coordinator.refundClaims(buyer), price * 5);
     }
 
+    function testFirstOrderMustRemainLiveUntilEarliestRandomnessRequest() external {
+        _setUpMarket(COLLECTION_WINDOW);
+        uint256 price = market.currentPullPrice();
+        uint48 earliestRequestTime = (block.timestamp + COLLECTION_WINDOW).toUint48();
+
+        vm.prank(buyer);
+        vm.expectRevert(EpochCoordinator.DeadlineExpired.selector);
+        coordinator.requestPull(_orderAtDeadline(buyer, price, earliestRequestTime - 1));
+
+        assertEq(coordinator.orderCount(1), 0);
+        assertEq(coordinator.totalLiabilities(), 0);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Idle));
+        assertFalse(market.epochLocked());
+    }
+
+    function testCollectingEpochDeadlineBoundaryIsInclusive() external {
+        _setUpMarket(COLLECTION_WINDOW);
+        uint256 price = market.currentPullPrice();
+        uint48 earliestRequestTime = (block.timestamp + COLLECTION_WINDOW).toUint48();
+
+        vm.prank(buyer);
+        coordinator.requestPull(_orderAtDeadline(buyer, price, earliestRequestTime));
+
+        vm.prank(buyer);
+        vm.expectRevert(EpochCoordinator.DeadlineExpired.selector);
+        coordinator.requestPull(_orderAtDeadline(buyer, price, earliestRequestTime - 1));
+
+        vm.prank(buyer);
+        coordinator.requestPull(_orderAtDeadline(buyer, price, earliestRequestTime));
+
+        assertEq(coordinator.orderCount(1), 2);
+        assertEq(coordinator.escrowLiability(), price * 2);
+        assertTrue(market.epochLocked());
+    }
+
+    function testAcceptedOrderCanExpireAfterRandomnessAndRefundNormally() external {
+        _setUpMarket(COLLECTION_WINDOW);
+        uint256 price = market.currentPullPrice();
+        uint48 earliestRequestTime = (block.timestamp + COLLECTION_WINDOW).toUint48();
+        uint48 deadline = earliestRequestTime + 10;
+
+        vm.prank(buyer);
+        coordinator.requestPull(_orderAtDeadline(buyer, price, deadline));
+
+        vm.warp(earliestRequestTime);
+        coordinator.requestRandomness();
+        randomness.setSeed(99);
+        coordinator.provideRandomness("");
+        vm.warp(uint256(deadline) + 1);
+        coordinator.resolveEpoch(1);
+
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+        assertEq(coordinator.refundClaims(buyer), price);
+        assertEq(coordinator.escrowLiability(), 0);
+        assertEq(coordinator.refundLiability(), price);
+        assertEq(market.activePositionCount(), 1);
+    }
+
     function _requestPull(address requester, address orderReceiver, uint256 ttl)
         private
         returns (uint256 price)
@@ -715,12 +778,20 @@ contract EpochCoordinatorSafetyTest is Test {
         view
         returns (ProtocolTypes.PullOrderInput memory)
     {
+        return _orderAtDeadline(orderReceiver, price, (block.timestamp + ttl).toUint48());
+    }
+
+    function _orderAtDeadline(address orderReceiver, uint256 price, uint48 deadline)
+        private
+        pure
+        returns (ProtocolTypes.PullOrderInput memory)
+    {
         return ProtocolTypes.PullOrderInput({
             receiver: orderReceiver,
             drawCount: 1,
             maxUnitPrice: price.toUint128(),
             maxTotalPrice: price.toUint128(),
-            deadline: (block.timestamp + ttl).toUint48(),
+            deadline: deadline,
             referralCode: bytes32(0)
         });
     }

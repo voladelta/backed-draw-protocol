@@ -159,7 +159,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
 
     function requestRandomness() external nonReentrant {
         if (epoch.status != ProtocolTypes.EpochStatus.Collecting) revert InvalidEpochState(epoch.status);
-        if (block.timestamp < uint256(epoch.openedAt) + collectionWindow) revert DeadlineExpired();
+        if (block.timestamp < _earliestRandomnessRequestTime()) revert DeadlineExpired();
         bytes32 commitment = keccak256(
             abi.encode(
                 block.chainid,
@@ -372,6 +372,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         }
         if (!_inFlight()) _startEpoch();
         if (epoch.status != ProtocolTypes.EpochStatus.Collecting) revert InvalidEpochState(epoch.status);
+        if (input.deadline < _earliestRandomnessRequestTime()) revert DeadlineExpired();
         if (uint256(epoch.totalRequested) + input.drawCount > maxDrawsPerEpoch) revert BatchTooLarge();
         vault.depositSettlement(payer, input.maxTotalPrice);
         escrowLiability += input.maxTotalPrice;
@@ -411,6 +412,10 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
             requestId: bytes32(0),
             randomSeed: 0
         });
+    }
+
+    function _earliestRandomnessRequestTime() private view returns (uint256) {
+        return uint256(epoch.openedAt) + collectionWindow;
     }
 
     function _refundOrder(ProtocolTypes.PullOrder storage order) private {

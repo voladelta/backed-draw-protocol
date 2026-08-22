@@ -24,3 +24,4 @@ runs = 512
 runs = 128
 depth = 64
 fail_on_revert = false
+show_metrics = true

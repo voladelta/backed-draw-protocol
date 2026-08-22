@@ -34,10 +34,10 @@ The Robinhood Chain RPC, explorer, chain ID, and WalletConnect project can all b
 
 - React 19 + Vite 8 + TypeScript
 - TanStack Router with intent preloading and route-owned pages
-- Tailwind/shadcn-style component primitives
+- StyleX-compiled component primitives with typed style props and shared design tokens; see [the StyleX authoring guide](./src/stylex-authoring.md)
 - wagmi + viem for wallet and contract interaction
 - Zustand for app workflow state
-- React Three Fiber + react-spring for the interactive collectible
+- Pointer-driven React state and CSS transforms for the interactive collectible
 - Pure economic functions with Vitest coverage
 - Solidity 0.8.28 + OpenZeppelin Contracts 5.7.0 + Foundry
 

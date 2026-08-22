@@ -17,21 +17,13 @@
     "check": "bun run lint && bun run test && bun run build && forge test && forge build --sizes"
   },
   "dependencies": {
-    "@react-spring/three": "latest",
-    "@react-spring/web": "latest",
-    "@react-three/drei": "latest",
-    "@react-three/fiber": "latest",
     "@stylexjs/stylex": "^0.19.0",
     "@tanstack/react-query": "latest",
     "@tanstack/react-router": "latest",
-    "@types/three": "latest",
-    "class-variance-authority": "latest",
-    "clsx": "latest",
     "js-confetti": "0.13.1",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "three": "latest",
     "viem": "latest",
     "wagmi": "latest",
     "zustand": "latest"
@@ -46,7 +38,6 @@
     "oxlint": "latest",
     "typescript": "^6.0.0",
     "vite": "^8.0.0",
-    "vitest": "latest",
-    "wrangler": "^4.118.0"
+    "vitest": "latest"
   }
 }

@@ -1,9 +1,3 @@
-import { clsx, type ClassValue } from "clsx"
-
-export function cn(...inputs: ClassValue[]) {
-  return clsx(inputs)
-}
-
 export function compactAddress(address?: string) {
   return address ? `${address.slice(0, 6)}…${address.slice(-4)}` : "Connect"
 }

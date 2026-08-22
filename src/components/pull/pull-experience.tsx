@@ -24,7 +24,7 @@ import { recentDraws } from "@/data/markets"
 import { ALL_POOLS_ID, poolOptions } from "@/data/pool-selection"
 import { spinAudio } from "@/audio/spin-audio"
 import { launchRevealConfetti } from "@/lib/reveal-confetti"
-import { cn, formatValue } from "@/lib/utils"
+import { formatValue } from "@/lib/utils"
 import type { Market, Position, PullStage, SettlementAsset } from "@/types/protocol"
 import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/contracts"
 import type { DeckCycleRequest } from "@/components/nft/nft-card-scene"
@@ -213,7 +213,7 @@ function StageArtifact({
   }
   return (
     <section
-      className={cn("gacha-arena", `stage-${stage}`)}
+      className={`gacha-arena stage-${stage}`}
       aria-label={`${market.name} collectible arena`}
     >
       <div className="artifact-stage">

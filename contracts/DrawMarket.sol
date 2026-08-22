@@ -17,7 +17,6 @@ import { IProtocolRegistry } from "./interfaces/IProtocolRegistry.sol";
 import { IDrawMarketCore } from "./interfaces/IDrawMarketCore.sol";
 
 contract DrawMarket is AccessControl, ReentrancyGuard {
-    using Math for uint256;
     using WeightedTree for WeightedTree.Tree;
 
     error ZeroAddress();
@@ -268,24 +267,15 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         _validateBacking(backing);
         address recipient = earningsRecipient == address(0) ? msg.sender : earningsRecipient;
 
-        positionId = nextPositionId++;
+        positionId = _initializePosition(collection, tokenId, backing, recipient);
         ProtocolTypes.Position storage position = positions[positionId];
-        position.collection = collection;
-        position.tokenId = tokenId;
-        position.backing = backing;
-        position.earningsRecipient = recipient;
         backingLiability += backing;
 
         vault.depositSettlement(msg.sender, backing);
         vault.depositNFT(msg.sender, collection, tokenId);
         positionToken.mint(msg.sender, positionId);
 
-        if (_treeLocked()) {
-            position.status = ProtocolTypes.PositionStatus.Staged;
-            _activationQueue.push(positionId);
-        } else {
-            _activate(positionId, position);
-        }
+        _activateOrStage(positionId, position);
         emit PositionDeposited(positionId, msg.sender, collection, tokenId, backing, position.status);
         _assertSolvent();
     }
@@ -359,11 +349,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
         if (recipient == address(0)) revert ZeroAddress();
         ProtocolTypes.PositionStatus status = positions[positionId].status;
-        if (
-            status != ProtocolTypes.PositionStatus.Staged && status != ProtocolTypes.PositionStatus.Active
-                && status != ProtocolTypes.PositionStatus.BackingChangeQueued
-                && status != ProtocolTypes.PositionStatus.WithdrawalQueued
-        ) revert InvalidPositionState(positionId, status);
+        if (!_isTransferable(status)) revert InvalidPositionState(positionId, status);
         positions[positionId].earningsRecipient = recipient;
     }
 
@@ -390,22 +376,13 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (boundaryActive) revert EpochBoundaryPending();
         _validateBacking(backing);
         if (!_canDeposit(owner)) revert Ineligible(owner);
-        positionId = nextPositionId++;
+        positionId = _initializePosition(collection, tokenId, backing, earningsRecipient);
         ProtocolTypes.Position storage position = positions[positionId];
-        position.collection = collection;
-        position.tokenId = tokenId;
-        position.backing = backing;
-        position.earningsRecipient = earningsRecipient;
         if (!_canReceive(owner, positionId)) revert Ineligible(owner);
         backingLiability += backing;
         vault.depositSettlement(payer, backing);
         positionToken.mint(owner, positionId);
-        if (_treeLocked()) {
-            position.status = ProtocolTypes.PositionStatus.Staged;
-            _activationQueue.push(positionId);
-        } else {
-            _activate(positionId, position);
-        }
+        _activateOrStage(positionId, position);
         emit PositionDeposited(positionId, owner, collection, tokenId, backing, position.status);
         _assertSolvent();
     }
@@ -430,9 +407,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
         delete withdrawalClaims[positionId];
         positions[positionId].status = ProtocolTypes.PositionStatus.Withdrawn;
-        backingLiability -= claim.backing;
-        earningsLiability -= claim.cashEarnings;
-        rewardInputLiability -= claim.rewardInput;
+        _releasePositionLiabilities(claim.backing, claim.cashEarnings, claim.rewardInput);
         _deliverSettlementOrAccrue(claim.owner, claim.owner, claim.backing);
         _deliverSettlementOrAccrue(claim.earningsRecipient, claim.earningsRecipient, claim.cashEarnings);
         _fundRewardOrAccrue(claim.earningsRecipient, claim.rewardInput);
@@ -622,20 +597,22 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     function currentExpectedValue() public view returns (uint256 rawExpectedValue) {
         uint256 treeWeight = _tree.total();
         if (activePositionCount == 0 || treeWeight == 0) return 0;
-        uint256 normalized = Math.mulDiv(activePositionCount, WEIGHT_NUMERATOR, treeWeight);
+        // Configuration bounds each weight and expected value by WEIGHT_NUMERATOR; uint32 capacity
+        // and the fixed BPS/WAD factors keep the direct numerators within uint256.
+        uint256 normalized = uint256(activePositionCount) * WEIGHT_NUMERATOR / treeWeight;
         rawExpectedValue = Math.ceilDiv(normalized, normalizationFactor);
     }
 
     function currentPullPrice() public view returns (uint256) {
         uint256 expectedValue = currentExpectedValue();
-        return Math.mulDiv(expectedValue, BPS + markupBps, BPS, Math.Rounding.Ceil);
+        return Math.ceilDiv(expectedValue * (BPS + markupBps), BPS);
     }
 
     function positionProbability(uint256 positionId) external view returns (uint256 probabilityWad) {
         ProtocolTypes.Position storage position = positions[positionId];
         if (!_isTreeMember(position.status)) return 0;
         uint256 treeWeight = _tree.total();
-        return treeWeight == 0 ? 0 : Math.mulDiv(_tree.weightAt(position.treeSlot), 1e18, treeWeight);
+        return treeWeight == 0 ? 0 : _tree.weightAt(position.treeSlot) * 1e18 / treeWeight;
     }
 
     function pendingPositionEarnings(uint256 positionId)
@@ -650,11 +627,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     function canTransferPosition(address, address to, uint256 positionId) external view returns (bool) {
         if (msg.sender != address(positionToken)) return false;
         ProtocolTypes.PositionStatus status = positions[positionId].status;
-        if (
-            status != ProtocolTypes.PositionStatus.Staged && status != ProtocolTypes.PositionStatus.Active
-                && status != ProtocolTypes.PositionStatus.BackingChangeQueued
-                && status != ProtocolTypes.PositionStatus.WithdrawalQueued
-        ) return false;
+        if (!_isTransferable(status)) return false;
         return _canReceive(to, positionId);
     }
 
@@ -718,9 +691,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
         address previousOwner = positionToken.ownerOf(positionId);
         _removeFromTree(position);
-        backingLiability -= position.backing;
-        earningsLiability -= cash;
-        rewardInputLiability -= rewardInput;
+        _releasePositionLiabilities(position.backing, cash, rewardInput);
 
         if (position.pendingBacking > position.backing) {
             uint256 unusedAddition = position.pendingBacking - position.backing;
@@ -729,10 +700,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
             settlementClaimLiability += unusedAddition;
         }
         position.pendingBacking = 0;
-        if (crownPositionId == positionId) {
-            _releaseCrown(positionId, 0);
-            _ensureCrown();
-        }
+        _succeedRemovedCrown(positionId);
         position.status = ProtocolTypes.PositionStatus.Selected;
         positionToken.setFrozen(positionId, true);
         receiptId = settlementEngine.registerSelection(
@@ -758,24 +726,32 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         address owner,
         address nftReceiver
     ) private {
-        (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
-        if (_isTreeMember(position.status)) _removeFromTree(position);
-        if (crownPositionId == positionId) {
-            _releaseCrown(positionId, 0);
-            _ensureCrown();
-        }
-        uint256 backing = position.backing;
-        if (position.pendingBacking > backing) backing += position.pendingBacking - backing;
+        (uint256 backing, uint256 cash, uint256 rewardInput) = _detachPosition(positionId, position);
         position.status = ProtocolTypes.PositionStatus.Withdrawn;
-        backingLiability -= backing;
-        earningsLiability -= cash;
-        rewardInputLiability -= rewardInput;
+        _releasePositionLiabilities(backing, cash, rewardInput);
         positionToken.burn(positionId);
         _deliverSettlementOrAccrue(owner, owner, backing);
         _deliverSettlementOrAccrue(position.earningsRecipient, position.earningsRecipient, cash);
         _fundRewardOrAccrue(position.earningsRecipient, rewardInput);
         _deliverNFTOrDefer(owner, nftReceiver, position.collection, position.tokenId);
         emit PositionWithdrawn(positionId, owner, backing, cash, rewardInput);
+    }
+
+    function _releasePositionLiabilities(uint256 backing, uint256 cash, uint256 rewardInput) private {
+        backingLiability -= backing;
+        earningsLiability -= cash;
+        rewardInputLiability -= rewardInput;
+    }
+
+    function _detachPosition(uint256 positionId, ProtocolTypes.Position storage position)
+        private
+        returns (uint256 backing, uint256 cash, uint256 rewardInput)
+    {
+        (cash, rewardInput) = _crystallizeEarnings(position);
+        if (_isTreeMember(position.status)) _removeFromTree(position);
+        _succeedRemovedCrown(positionId);
+        backing = position.backing;
+        if (position.pendingBacking > backing) backing = position.pendingBacking;
     }
 
     function _fundRewardOrAccrue(address beneficiary, uint256 amount) private {
@@ -808,6 +784,29 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (pendingNFTClaims[collection][tokenId] != address(0)) revert NFTClaimAlreadyExists();
         pendingNFTClaims[collection][tokenId] = claimOwner;
         emit WithdrawalNFTDeliveryDeferred(collection, tokenId, claimOwner);
+    }
+
+    function _initializePosition(
+        address collection,
+        uint256 tokenId,
+        uint128 backing,
+        address earningsRecipient
+    ) private returns (uint256 positionId) {
+        positionId = nextPositionId++;
+        ProtocolTypes.Position storage position = positions[positionId];
+        position.collection = collection;
+        position.tokenId = tokenId;
+        position.backing = backing;
+        position.earningsRecipient = earningsRecipient;
+    }
+
+    function _activateOrStage(uint256 positionId, ProtocolTypes.Position storage position) private {
+        if (_treeLocked()) {
+            position.status = ProtocolTypes.PositionStatus.Staged;
+            _activationQueue.push(positionId);
+        } else {
+            _activate(positionId, position);
+        }
     }
 
     function _activate(uint256 positionId, ProtocolTypes.Position storage position) private {
@@ -897,9 +896,6 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         view
         returns (uint256 cash, uint256 rewardInput)
     {
-        if (position.selectedCashEarnings != 0 || position.selectedRewardInput != 0) {
-            return (position.selectedCashEarnings, position.selectedRewardInput);
-        }
         if (!_isTreeMember(position.status)) return (0, 0);
         cash = (accBasePerPosition - position.baseDebt) / ACC_PRECISION
             + (accMarkupPerPosition - position.markupDebt) / ACC_PRECISION;
@@ -921,26 +917,28 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function _recordCashDust(uint256 scaledDust) private {
-        // Fractions become security revenue only after retired entitlements sum to a raw asset unit.
-        uint256 totalDust = _cashRoundingDust + scaledDust;
-        uint256 wholeUnits = totalDust / ACC_PRECISION;
-        _cashRoundingDust = totalDust % ACC_PRECISION;
-        if (wholeUnits == 0) return;
-        earningsLiability -= wholeUnits;
-        securityLiability += wholeUnits;
+        _recordRoundingDust(scaledDust, false);
     }
 
     function _recordRewardDust(uint256 scaledDust) private {
-        uint256 totalDust = _rewardRoundingDust + scaledDust;
+        _recordRoundingDust(scaledDust, true);
+    }
+
+    function _recordRoundingDust(uint256 scaledDust, bool reward) private {
+        // Fractions become security revenue only after retired entitlements sum to a raw asset unit.
+        uint256 totalDust = (reward ? _rewardRoundingDust : _cashRoundingDust) + scaledDust;
         uint256 wholeUnits = totalDust / ACC_PRECISION;
-        _rewardRoundingDust = totalDust % ACC_PRECISION;
+        uint256 remainder = totalDust % ACC_PRECISION;
+        if (reward) _rewardRoundingDust = remainder;
+        else _cashRoundingDust = remainder;
         if (wholeUnits == 0) return;
-        rewardInputLiability -= wholeUnits;
+        if (reward) rewardInputLiability -= wholeUnits;
+        else earningsLiability -= wholeUnits;
         securityLiability += wholeUnits;
     }
 
     function _weight(uint256 rawBacking) private view returns (uint256) {
-        return Math.mulDiv(WEIGHT_NUMERATOR, 1, rawBacking * normalizationFactor);
+        return WEIGHT_NUMERATOR / (rawBacking * normalizationFactor);
     }
 
     function _leafCommitment(uint256 positionId, uint32 slot, uint256 weight) private pure returns (bytes32) {
@@ -992,6 +990,12 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         _recomputeCrown();
     }
 
+    function _succeedRemovedCrown(uint256 positionId) private {
+        if (crownPositionId != positionId) return;
+        _releaseCrown(positionId, 0);
+        _ensureCrown();
+    }
+
     function _recomputeCrown() private {
         uint256 previousPositionId = crownPositionId;
         uint256 positionId;
@@ -1019,14 +1023,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
 
     function _prepareWithdrawal(uint256 positionId, ProtocolTypes.Position storage position) private {
         address owner = positionToken.ownerOf(positionId);
-        (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
-        _removeFromTree(position);
-        if (crownPositionId == positionId) {
-            _releaseCrown(positionId, 0);
-            _ensureCrown();
-        }
-        uint256 backing = position.backing;
-        if (position.pendingBacking > backing) backing = position.pendingBacking;
+        (uint256 backing, uint256 cash, uint256 rewardInput) = _detachPosition(positionId, position);
         position.pendingBacking = 0;
         position.status = ProtocolTypes.PositionStatus.WithdrawalClaimable;
         withdrawalClaims[positionId] = WithdrawalClaim({
@@ -1041,9 +1038,12 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function _isTreeMember(ProtocolTypes.PositionStatus status) private pure returns (bool) {
-        return status == ProtocolTypes.PositionStatus.Active
-            || status == ProtocolTypes.PositionStatus.BackingChangeQueued
-            || status == ProtocolTypes.PositionStatus.WithdrawalQueued;
+        return status >= ProtocolTypes.PositionStatus.Active
+            && status <= ProtocolTypes.PositionStatus.WithdrawalQueued;
+    }
+
+    function _isTransferable(ProtocolTypes.PositionStatus status) private pure returns (bool) {
+        return status <= ProtocolTypes.PositionStatus.WithdrawalQueued;
     }
 
     function _assertSolvent() private view {

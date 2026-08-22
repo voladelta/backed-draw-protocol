@@ -911,7 +911,21 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function _canReceive(address user, uint256 positionId) private view returns (bool) {
-        return address(eligibilityPolicy) == address(0) || eligibilityPolicy.canReceive(user, positionId);
+        address policy = address(eligibilityPolicy);
+        if (policy == address(0)) return true;
+        bytes memory callData = abi.encodeCall(IEligibilityPolicy.canReceive, (user, positionId));
+        bool success;
+        uint256 resultSize;
+        uint256 allowed;
+        assembly ("memory-safe") {
+            success := staticcall(gas(), policy, add(callData, 0x20), mload(callData), 0, 0)
+            resultSize := returndatasize()
+            if and(success, eq(resultSize, 0x20)) {
+                returndatacopy(0, 0, 0x20)
+                allowed := mload(0)
+            }
+        }
+        return success && resultSize == 32 && allowed == 1;
     }
 
     function _treeLocked() private view returns (bool) {

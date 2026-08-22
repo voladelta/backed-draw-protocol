@@ -26,6 +26,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     error EpochBoundaryPending();
     error RouterNotApproved(address router);
     error InvalidPayer(address payer, address caller);
+    error ZeroAddress();
 
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
@@ -83,6 +84,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     );
     event EpochFinalized(uint256 indexed epochId, uint32 resolvedDraws);
     event EpochCancelled(uint256 indexed epochId);
+    event EpochRefunding(uint256 indexed epochId, ProtocolTypes.EpochStatus previousStatus);
     event EpochBoundaryAdvanced(uint256 indexed epochId, uint32 processed, bool complete);
     event PullsPaused(bool paused);
 
@@ -267,11 +269,22 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     }
 
     function cancelTimedOutEpoch(uint32 maxOrders) external nonReentrant {
-        if (epoch.status != ProtocolTypes.EpochStatus.RandomnessRequested) {
-            revert InvalidEpochState(epoch.status);
+        if (maxOrders == 0) revert BatchTooLarge();
+        ProtocolTypes.EpochStatus status = epoch.status;
+        if (
+            status != ProtocolTypes.EpochStatus.RandomnessRequested
+                && status != ProtocolTypes.EpochStatus.RandomnessReady
+                && status != ProtocolTypes.EpochStatus.Resolving
+                && status != ProtocolTypes.EpochStatus.Refunding
+        ) {
+            revert InvalidEpochState(status);
         }
         if (block.timestamp <= uint256(epoch.randomnessRequestedAt) + randomnessTimeout) {
             revert RandomnessNotTimedOut();
+        }
+        if (status != ProtocolTypes.EpochStatus.Refunding) {
+            epoch.status = ProtocolTypes.EpochStatus.Refunding;
+            emit EpochRefunding(epoch.id, status);
         }
         ProtocolTypes.PullOrder[] storage epochOrders = _orders[epoch.id];
         uint32 processed;
@@ -323,6 +336,8 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         returns (uint256 orderIndex)
     {
         if (pullsPaused) revert IntakePaused();
+        address receiver = input.receiver == address(0) ? buyer : input.receiver;
+        if (buyer == address(0) || receiver == address(0)) revert ZeroAddress();
         if (
             epoch.status == ProtocolTypes.EpochStatus.Finalizing
                 || epoch.status == ProtocolTypes.EpochStatus.Cancelling || market.epochBoundaryPending()
@@ -346,7 +361,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
         address referrer = referralRegistry.bindFromMarket(buyer, input.referralCode);
         ProtocolTypes.PullOrder memory order = ProtocolTypes.PullOrder({
             buyer: buyer,
-            receiver: input.receiver == address(0) ? buyer : input.receiver,
+            receiver: receiver,
             drawCount: input.drawCount,
             resolvedCount: 0,
             maxUnitPrice: input.maxUnitPrice,
@@ -423,6 +438,6 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
             || status == ProtocolTypes.EpochStatus.RandomnessRequested
             || status == ProtocolTypes.EpochStatus.RandomnessReady
             || status == ProtocolTypes.EpochStatus.Resolving || status == ProtocolTypes.EpochStatus.Finalizing
-            || status == ProtocolTypes.EpochStatus.Cancelling;
+            || status == ProtocolTypes.EpochStatus.Cancelling || status == ProtocolTypes.EpochStatus.Refunding;
     }
 }

@@ -23,7 +23,8 @@ library ProtocolTypes {
         Finalized,
         Cancelled,
         Finalizing,
-        Cancelling
+        Cancelling,
+        Refunding
     }
 
     enum PullStatus {

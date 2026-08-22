@@ -11,6 +11,7 @@ import { ProtocolRegistry } from "../contracts/ProtocolRegistry.sol";
 import { ReferralRegistry } from "../contracts/ReferralRegistry.sol";
 import { SettlementEngine } from "../contracts/SettlementEngine.sol";
 import { SwapAndPullRouter } from "../contracts/SwapAndPullRouter.sol";
+import { IDrawMarketCore } from "../contracts/interfaces/IDrawMarketCore.sol";
 import { IEligibilityPolicy } from "../contracts/interfaces/IEligibilityPolicy.sol";
 import { IRandomnessAdapter } from "../contracts/interfaces/IRandomnessAdapter.sol";
 import { PositionNFT } from "../contracts/tokens/PositionNFT.sol";
@@ -22,9 +23,19 @@ import { MockRewardController } from "./mocks/MockRewardController.sol";
 
 contract EpochCoordinatorSafetyEligibilityPolicy is IEligibilityPolicy {
     mapping(address user => mapping(uint256 positionId => bool denied)) public receiveDenied;
+    mapping(address user => bool enabled) public receiveReverts;
+    mapping(address user => bool enabled) public receiveMalformed;
 
     function setReceiveDenied(address user, uint256 positionId, bool denied) external {
         receiveDenied[user][positionId] = denied;
+    }
+
+    function setReceiveReverts(address user, bool enabled) external {
+        receiveReverts[user] = enabled;
+    }
+
+    function setReceiveMalformed(address user, bool enabled) external {
+        receiveMalformed[user] = enabled;
     }
 
     function canDeposit(address, uint256) external pure returns (bool) {
@@ -36,9 +47,18 @@ contract EpochCoordinatorSafetyEligibilityPolicy is IEligibilityPolicy {
     }
 
     function canReceive(address user, uint256 positionId) external view returns (bool) {
+        if (receiveReverts[user]) revert("receive policy failed");
+        if (receiveMalformed[user]) {
+            assembly ("memory-safe") {
+                mstore(0, 1)
+                return(31, 1)
+            }
+        }
         return !receiveDenied[user][positionId];
     }
 }
+
+error UnexpectedResolveFailure();
 
 contract EpochCoordinatorSafetyReplayingAdapter is IRandomnessAdapter {
     bytes32 public constant REQUEST_ID = keccak256("replayed-request");
@@ -297,6 +317,33 @@ contract EpochCoordinatorSafetyTest is Test {
         assertEq(asset.balanceOf(address(router)), 0);
     }
 
+    function testApprovedRouterCannotSubmitZeroBuyerOrNormalizedReceiver() external {
+        address approvedRouter = makeAddr("approved-router");
+        vm.startPrank(governor);
+        registry.setRouter(approvedRouter, true);
+        coordinator.grantRole(coordinator.ROUTER_ROLE(), approvedRouter);
+        vm.stopPrank();
+
+        uint256 price = market.currentPullPrice();
+        asset.mint(approvedRouter, price);
+        vm.prank(approvedRouter);
+        asset.approve(address(vault), price);
+        uint256 balanceBefore = asset.balanceOf(approvedRouter);
+
+        vm.prank(approvedRouter);
+        vm.expectRevert(EpochCoordinator.ZeroAddress.selector);
+        coordinator.requestPullFor(approvedRouter, address(0), _order(receiver, price, 1 hours));
+
+        vm.prank(approvedRouter);
+        vm.expectRevert(EpochCoordinator.ZeroAddress.selector);
+        coordinator.requestPullFor(approvedRouter, address(0), _order(address(0), price, 1 hours));
+
+        assertEq(asset.balanceOf(approvedRouter), balanceBefore);
+        assertEq(coordinator.orderCount(1), 0);
+        assertEq(coordinator.totalLiabilities(), 0);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Idle));
+    }
+
     function testIneligibleDirectReceiversAreRefundedWithinResolveBudget() external {
         eligibility.setReceiveDenied(receiver, 1, true);
         uint256 price = _requestPull(buyer, receiver, 1 hours);
@@ -319,6 +366,120 @@ contract EpochCoordinatorSafetyTest is Test {
         assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
         assertEq(coordinator.refundClaims(buyer), price * 3);
         assertEq(market.activePositionCount(), 1);
+    }
+
+    function testRevertingReceivePolicyRefundsOrderAndContinues() external {
+        eligibility.setReceiveReverts(receiver, true);
+        uint256 price = _requestPull(buyer, receiver, 1 hours);
+        _requestPull(buyer, buyer, 1 hours);
+        coordinator.requestRandomness();
+        randomness.setSeed(17);
+        coordinator.provideRandomness("");
+
+        coordinator.resolveEpoch(2);
+
+        (,,, uint32 totalResolved) = _epochState();
+        assertEq(totalResolved, 1);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+        assertEq(coordinator.refundClaims(buyer), price);
+        assertEq(coordinator.escrowLiability(), 0);
+        assertEq(coordinator.refundLiability(), price);
+        assertEq(market.activePositionCount(), 0);
+    }
+
+    function testMalformedReceivePolicyRefundsOrderAndContinues() external {
+        eligibility.setReceiveMalformed(receiver, true);
+        uint256 price = _requestPull(buyer, receiver, 1 hours);
+        _requestPull(buyer, buyer, 1 hours);
+        coordinator.requestRandomness();
+        randomness.setSeed(23);
+        coordinator.provideRandomness("");
+
+        coordinator.resolveEpoch(2);
+
+        (,,, uint32 totalResolved) = _epochState();
+        assertEq(totalResolved, 1);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+        assertEq(coordinator.refundClaims(buyer), price);
+        assertEq(coordinator.escrowLiability(), 0);
+        assertEq(coordinator.refundLiability(), price);
+        assertEq(market.activePositionCount(), 0);
+    }
+
+    function testUnexpectedResolveFailureHasBoundedPermissionlessRecovery() external {
+        _depositPosition(2, 100 ether);
+        uint256 price = _requestPull(buyer, buyer, 1 hours);
+        _requestPull(buyer, buyer, 1 hours);
+        _requestPull(buyer, buyer, 1 hours);
+        vm.prank(depositor);
+        market.requestWithdrawal(2);
+        coordinator.requestRandomness();
+
+        uint256 totalWeight = market.totalWeight();
+        uint256 seed;
+        while (
+            uint256(keccak256(abi.encode(seed, uint256(1), uint32(0), uint32(0)))) % totalWeight
+                >= totalWeight / 2
+        ) {
+            ++seed;
+        }
+        randomness.setSeed(seed);
+        coordinator.provideRandomness("");
+        coordinator.resolveEpoch(1);
+
+        assertEq(_orderCursor(), 1);
+        assertEq(market.activePositionCount(), 1);
+        assertEq(coordinator.escrowLiability(), price * 2);
+        vm.mockCallRevert(
+            address(market),
+            abi.encodeWithSelector(IDrawMarketCore.resolveDraw.selector),
+            abi.encodeWithSelector(UnexpectedResolveFailure.selector)
+        );
+        vm.expectRevert(UnexpectedResolveFailure.selector);
+        coordinator.resolveEpoch(1);
+
+        assertEq(_orderCursor(), 1);
+        assertEq(coordinator.escrowLiability(), price * 2);
+        assertEq(coordinator.refundLiability(), 0);
+        assertEq(market.activePositionCount(), 1);
+
+        vm.warp(block.timestamp + RANDOMNESS_TIMEOUT + 1);
+        vm.prank(makeAddr("first-recovery-caller"));
+        coordinator.cancelTimedOutEpoch(1);
+
+        assertEq(_orderCursor(), 2);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Refunding));
+        assertEq(coordinator.refundClaims(buyer), price);
+        assertEq(coordinator.escrowLiability(), price);
+        assertEq(coordinator.refundLiability(), price);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EpochCoordinator.InvalidEpochState.selector, ProtocolTypes.EpochStatus.Refunding
+            )
+        );
+        coordinator.resolveEpoch(1);
+
+        vm.prank(makeAddr("second-recovery-caller"));
+        coordinator.cancelTimedOutEpoch(1);
+
+        (,,, uint32 totalResolved) = _epochState();
+        assertEq(totalResolved, 1);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Cancelling));
+        assertEq(coordinator.refundClaims(buyer), price * 2);
+        assertEq(coordinator.escrowLiability(), 0);
+        assertEq(coordinator.refundLiability(), price * 2);
+        assertTrue(market.epochBoundaryPending());
+
+        coordinator.advanceEpochBoundary(1);
+
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Cancelled));
+        assertFalse(market.epochLocked());
+        assertFalse(market.epochBoundaryPending());
+        assertEq(market.activePositionCount(), 0);
+        (,,,,, ProtocolTypes.PositionStatus selectedStatus,,,,,,) = market.positions(1);
+        (,,,,, ProtocolTypes.PositionStatus withdrawnStatus,,,,,,) = market.positions(2);
+        assertEq(uint8(selectedStatus), uint8(ProtocolTypes.PositionStatus.Selected));
+        assertEq(uint8(withdrawnStatus), uint8(ProtocolTypes.PositionStatus.WithdrawalClaimable));
     }
 
     function testOverPriceOrdersConsumeResolveBudget() external {

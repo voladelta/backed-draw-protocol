@@ -406,6 +406,97 @@ contract EpochCoordinatorSafetyTest is Test {
         assertEq(market.activePositionCount(), 0);
     }
 
+    function testFavorableHealthySeedCannotBeCancelledAfterTimeout() external {
+        _depositPosition(2, 100 ether);
+        _requestPull(buyer, buyer, 3 hours);
+        coordinator.requestRandomness();
+        randomness.setSeed(_seedSelectingFirstPosition());
+        vm.warp(block.timestamp + RANDOMNESS_TIMEOUT);
+        coordinator.provideRandomness("");
+        vm.warp(block.timestamp + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EpochCoordinator.InvalidEpochState.selector, ProtocolTypes.EpochStatus.RandomnessReady
+            )
+        );
+        coordinator.cancelTimedOutEpoch(1);
+
+        coordinator.resolveEpoch(1);
+        (,,,,, ProtocolTypes.PositionStatus selectedStatus,,,,,,) = market.positions(1);
+        assertEq(uint8(selectedStatus), uint8(ProtocolTypes.PositionStatus.Selected));
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+    }
+
+    function testUnfavorableHealthySeedCannotBeCancelledAfterTimeout() external {
+        _depositPosition(2, 100 ether);
+        _requestPull(buyer, buyer, 3 hours);
+        coordinator.requestRandomness();
+        randomness.setSeed(_seedSelectingSecondPosition());
+        vm.warp(block.timestamp + RANDOMNESS_TIMEOUT);
+        coordinator.provideRandomness("");
+        vm.warp(block.timestamp + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EpochCoordinator.InvalidEpochState.selector, ProtocolTypes.EpochStatus.RandomnessReady
+            )
+        );
+        coordinator.cancelTimedOutEpoch(1);
+
+        coordinator.resolveEpoch(1);
+        (,,,,, ProtocolTypes.PositionStatus selectedStatus,,,,,,) = market.positions(2);
+        assertEq(uint8(selectedStatus), uint8(ProtocolTypes.PositionStatus.Selected));
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+    }
+
+    function testHealthyResolvingEpochCannotBeCancelledAfterTimeout() external {
+        _depositPosition(2, 100 ether);
+        _requestPull(buyer, buyer, 3 hours);
+        _requestPull(buyer, buyer, 3 hours);
+        coordinator.requestRandomness();
+        randomness.setSeed(_seedSelectingFirstPosition());
+        coordinator.provideRandomness("");
+        coordinator.resolveEpoch(1);
+        vm.warp(block.timestamp + RANDOMNESS_TIMEOUT + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EpochCoordinator.InvalidEpochState.selector, ProtocolTypes.EpochStatus.Resolving
+            )
+        );
+        coordinator.cancelTimedOutEpoch(1);
+
+        coordinator.resolveEpoch(1);
+        (,,, uint32 totalResolved) = _epochState();
+        assertEq(totalResolved, 2);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+    }
+
+    function testLowGasCannotManufactureRefunding() external {
+        uint256 price = _requestPull(buyer, buyer, 1 hours);
+        coordinator.requestRandomness();
+        randomness.setSeed(29);
+        coordinator.provideRandomness("");
+
+        uint256 lowGas = coordinator.RESOLUTION_CALL_GAS() + coordinator.RESOLUTION_GAS_RESERVE() - 1;
+        (bool ok, bytes memory reason) =
+            address(coordinator).call{ gas: lowGas }(abi.encodeCall(EpochCoordinator.resolveEpoch, (1)));
+
+        assertFalse(ok);
+        assertEq(reason, abi.encodeWithSelector(EpochCoordinator.InsufficientResolutionGas.selector));
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.RandomnessReady));
+        assertEq(coordinator.escrowLiability(), price);
+        assertEq(coordinator.refundLiability(), 0);
+
+        uint256 acceptedGas =
+            coordinator.RESOLUTION_CALL_GAS() + coordinator.RESOLUTION_GAS_RESERVE() + 100_000;
+        (ok, reason) =
+            address(coordinator).call{ gas: acceptedGas }(abi.encodeCall(EpochCoordinator.resolveEpoch, (1)));
+        assertTrue(ok, string(reason));
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Finalized));
+    }
+
     function testUnexpectedResolveFailureHasBoundedPermissionlessRecovery() external {
         _depositPosition(2, 100 ether);
         uint256 price = _requestPull(buyer, buyer, 1 hours);
@@ -435,15 +526,22 @@ contract EpochCoordinatorSafetyTest is Test {
             abi.encodeWithSelector(IDrawMarketCore.resolveDraw.selector),
             abi.encodeWithSelector(UnexpectedResolveFailure.selector)
         );
-        vm.expectRevert(UnexpectedResolveFailure.selector);
         coordinator.resolveEpoch(1);
+        vm.clearMockedCalls();
 
         assertEq(_orderCursor(), 1);
         assertEq(coordinator.escrowLiability(), price * 2);
         assertEq(coordinator.refundLiability(), 0);
         assertEq(market.activePositionCount(), 1);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Refunding));
 
-        vm.warp(block.timestamp + RANDOMNESS_TIMEOUT + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EpochCoordinator.InvalidEpochState.selector, ProtocolTypes.EpochStatus.Refunding
+            )
+        );
+        coordinator.resolveEpoch(1);
+
         vm.prank(makeAddr("first-recovery-caller"));
         coordinator.cancelTimedOutEpoch(1);
 
@@ -452,13 +550,6 @@ contract EpochCoordinatorSafetyTest is Test {
         assertEq(coordinator.refundClaims(buyer), price);
         assertEq(coordinator.escrowLiability(), price);
         assertEq(coordinator.refundLiability(), price);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                EpochCoordinator.InvalidEpochState.selector, ProtocolTypes.EpochStatus.Refunding
-            )
-        );
-        coordinator.resolveEpoch(1);
-
         vm.prank(makeAddr("second-recovery-caller"));
         coordinator.cancelTimedOutEpoch(1);
 
@@ -480,6 +571,51 @@ contract EpochCoordinatorSafetyTest is Test {
         (,,,,, ProtocolTypes.PositionStatus withdrawnStatus,,,,,,) = market.positions(2);
         assertEq(uint8(selectedStatus), uint8(ProtocolTypes.PositionStatus.Selected));
         assertEq(uint8(withdrawnStatus), uint8(ProtocolTypes.PositionStatus.WithdrawalClaimable));
+    }
+
+    function testUnexpectedFailureRefundsOnlyUnresolvedDrawSuffix() external {
+        _depositPosition(2, 100 ether);
+        _depositPosition(3, 100 ether);
+        uint256 price = market.currentPullPrice();
+        vm.prank(buyer);
+        coordinator.requestPull(
+            ProtocolTypes.PullOrderInput({
+                receiver: buyer,
+                drawCount: 3,
+                maxUnitPrice: price.toUint128(),
+                maxTotalPrice: (price * 3).toUint128(),
+                deadline: (block.timestamp + 1 hours).toUint48(),
+                referralCode: bytes32(0)
+            })
+        );
+        coordinator.requestRandomness();
+        randomness.setSeed(101);
+        coordinator.provideRandomness("");
+        coordinator.resolveEpoch(1);
+
+        ProtocolTypes.PullOrder memory partiallyResolved = coordinator.orderAt(1, 0);
+        assertEq(partiallyResolved.resolvedCount, 1);
+        assertEq(partiallyResolved.escrowRemaining, price * 2);
+        vm.mockCallRevert(
+            address(market),
+            abi.encodeWithSelector(IDrawMarketCore.resolveDraw.selector),
+            abi.encodeWithSelector(UnexpectedResolveFailure.selector)
+        );
+        coordinator.resolveEpoch(1);
+        vm.clearMockedCalls();
+
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Refunding));
+        assertEq(coordinator.escrowLiability(), price * 2);
+        assertEq(coordinator.refundLiability(), 0);
+        coordinator.cancelTimedOutEpoch(1);
+
+        (,,, uint32 totalResolved) = _epochState();
+        assertEq(totalResolved, 1);
+        assertEq(coordinator.refundClaims(buyer), price * 2);
+        assertEq(coordinator.escrowLiability(), 0);
+        assertEq(coordinator.refundLiability(), price * 2);
+        assertEq(uint8(_epochStatus()), uint8(ProtocolTypes.EpochStatus.Cancelled));
+        assertEq(market.activePositionCount(), 2);
     }
 
     function testOverPriceOrdersConsumeResolveBudget() external {
@@ -552,6 +688,26 @@ contract EpochCoordinatorSafetyTest is Test {
         asset.approve(address(vault), backing);
         market.depositPosition(address(collection), tokenId, backing, depositor);
         vm.stopPrank();
+    }
+
+    function _seedSelectingFirstPosition() private view returns (uint256 seed) {
+        uint256 totalWeight = market.totalWeight();
+        while (
+            uint256(keccak256(abi.encode(seed, uint256(1), uint32(0), uint32(0)))) % totalWeight
+                >= totalWeight / 2
+        ) {
+            ++seed;
+        }
+    }
+
+    function _seedSelectingSecondPosition() private view returns (uint256 seed) {
+        uint256 totalWeight = market.totalWeight();
+        while (
+            uint256(keccak256(abi.encode(seed, uint256(1), uint32(0), uint32(0)))) % totalWeight
+                < totalWeight / 2
+        ) {
+            ++seed;
+        }
     }
 
     function _order(address orderReceiver, uint256 price, uint256 ttl)

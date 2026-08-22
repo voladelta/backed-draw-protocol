@@ -761,7 +761,9 @@ contract ProtocolInvariantTest is StdInvariant, Test {
             collectionWindow: 0,
             randomnessTimeout: 10,
             decisionWindow: 1 hours,
-            markupBps: 1_000
+            markupBps: 250,
+            cashPayoutBps: 9_000,
+            keepPayoutBps: 9_900
         });
         DrawMarket implementation = new DrawMarket();
         address marketAddress = Clones.clone(address(implementation));
@@ -779,7 +781,9 @@ contract ProtocolInvariantTest is StdInvariant, Test {
             config.rewardController,
             config.minBacking,
             config.maxBacking,
-            config.decisionWindow
+            config.decisionWindow,
+            config.cashPayoutBps,
+            config.keepPayoutBps
         );
         coordinator = new EpochCoordinator(
             config.marketId,

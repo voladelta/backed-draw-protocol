@@ -93,9 +93,9 @@ Working protocol description:
 
 > Deposit a collectible with ETH or USDG backing. The backing determines how often the position is likely to be drawn. While active, the position earns an equal share of draw proceeds and fees. Pullers pay one transparent pool-derived price and receive a verifiably random position. After reveal, they choose the collectible, a discounted cash settlement, the protocol token, or immediate relisting.
 
-NFW currently uses inverse-backing odds, an expected-value pull price plus a 10% markup, four settlement exits, staged deposits, a 24-hour decision period, depositor rewards, referrals, and a Crown mechanism.
+The design uses inverse-backing odds, an expected-value pull price plus a per-market markup, four settlement exits, staged deposits, a 24-hour decision period, depositor rewards, referrals, and a Crown mechanism.
 
-Our target preserves those recognizable mechanics but makes the accounting, currency architecture, modularity, and ownership of every payment explicit.
+Our target preserves those recognizable mechanics but makes the accounting, currency architecture, modularity, and ownership of every payment explicit. The puller-first flagship target is a 2.5% markup, a 90% cash or `$DRAW` swap-input ratio, and a 99% keep ratio. These values are a launch hypothesis to measure, not a promise of profitability or demand.
 
 ---
 
@@ -165,7 +165,7 @@ This identity should drive the complete economic design.
 
 ## 3.3 Pull price
 
-With a default markup \(m=10\%\):
+For the flagship target, \(m=2.5\%\):
 
 \[
 PullPrice = EV \times (1+m)
@@ -175,13 +175,39 @@ Split it into:
 
 ```text
 Base draw proceeds = EV
-Markup              = EV × 10%
+Markup              = EV × 2.5%
 Total pull price    = EV + markup
 ```
 
-NFW publicly describes the expected-value-plus-markup model and distributes the markup among depositors, its reward mechanism, the Crown, and the protocol.
+The implementation accounts for the base \(EV\) and markup separately.
 
-Our implementation should additionally account for the base \(EV\) explicitly.
+### Puller return labels
+
+For a cash payout ratio \(c\), the token-independent cash-floor RTP is:
+
+\[
+CashFloorRTP = \frac{c}{1+m}
+\]
+
+This is the settlement-asset cash entitlement divided by pull price, before gas, swap costs, or payment-routing costs. Product surfaces and analytics must keep four concepts separate:
+
+- **Guaranteed cash floor:** the cash entitlement under the market's immutable cash ratio, subject to the protocol remaining solvent, before gas and routing costs.
+- **Collectible option value:** the puller's subjective value from choosing the NFT instead of cash; it is not a guaranteed return.
+- **Token-dependent return:** the eventual value of `$DRAW` received from the bounded swap; it depends on execution and token price and is not cash-floor RTP.
+- **Entertainment value:** a qualitative user benefit that must not be assigned an invented percentage or included in financial return claims.
+
+### Economic model scenarios
+
+These scenarios are inputs for sensitivity analysis and model-versus-reality tracking. They are not forecasts or promises.
+
+| Scenario                | Markup | Cash / `$DRAW` input | Keep | Cash-floor RTP |
+| ----------------------- | -----: | -------------------: | ---: | -------------: |
+| Legacy stress profile   |    10% |                  85% |  99% |          77.3% |
+| Lower-markup comparison |     4% |                  90% |  99% |          86.5% |
+| Flagship launch target  |   2.5% |                  90% |  99% |          87.8% |
+| Puller-first experiment |   1.5% |                  90% |  99% |          88.7% |
+
+The table isolates the guaranteed cash floor. It does not add token-price appreciation, collectible option value, entertainment value, or gas and swap costs. Comparative evidence may motivate these scenarios, but it does not establish that a particular markup or payout ratio causes demand or retention.
 
 ---
 
@@ -230,15 +256,15 @@ Remaining 90% of markup:
     94% → active positions, equally
 ```
 
-If markup is 10% of EV, effective allocation is approximately:
+At the flagship 2.5% markup, effective allocation is approximately:
 
 | Recipient                       | Effective share of EV |
 | ------------------------------- | --------------------: |
 | Active-position base proceeds   |              100.000% |
-| Active-position cash markup     |                8.460% |
-| Active-position `$DRAW` rewards |                1.000% |
-| Crown                           |                0.450% |
-| Protocol from markup            |                0.090% |
+| Active-position cash markup     |                2.115% |
+| Active-position `$DRAW` rewards |                0.250% |
+| Crown                           |                0.113% |
+| Protocol from markup            |                0.023% |
 
 The reward-token purchase is credited equally to positions active for that draw.
 
@@ -268,28 +294,28 @@ Settlement revenue:
 
 ```text
 Buyer:
-    receives 85% of backing
+    receives 90% of backing
 
 Position owner:
     receives NFT back
     receives all accrued earnings
 
 Settlement revenue:
-    15% of backing
+    10% of backing
 ```
 
 ### Take `$DRAW`
 
 ```text
 Buyer:
-    receives $DRAW purchased with 85% of backing
+    receives $DRAW purchased with 90% of backing
 
 Position owner:
     receives NFT back
     receives all accrued earnings
 
 Settlement revenue:
-    15% of backing
+    10% of backing
 ```
 
 ### Keep and relist
@@ -308,7 +334,7 @@ Settlement revenue:
     1% of old backing
 ```
 
-These keep and cash ratios match NFW’s current public design.
+The flagship ratios are an immutable per-market policy. Other approved markets may use bounded scenario values and must disclose them before a pull.
 
 ---
 
@@ -390,7 +416,31 @@ struct MarketKey {
 
 For native-looking ETH markets, the vault should normalize ETH to canonical WETH internally while the router exposes native ETH deposits and withdrawals.
 
-## 5.2 Market classes
+## 5.2 Immutable economic policy
+
+Every market receives its economic parameters at creation:
+
+```solidity
+struct MarketConfig {
+    // other identity, module, risk and timing fields
+    uint16 markupBps;
+    uint16 cashPayoutBps;
+    uint16 keepPayoutBps;
+}
+```
+
+`DrawMarket` owns the immutable `markupBps` policy, while its paired `SettlementEngine` owns the immutable `cashPayoutBps` and `keepPayoutBps` used for settlement. `MarketFactory.createMarket` rejects policies outside implementation-v1 safety bounds:
+
+```text
+markupBps <= 5,000
+8,000 <= cashPayoutBps <= 9,500
+9,500 <= keepPayoutBps <= 10,000
+cashPayoutBps <= keepPayoutBps
+```
+
+These are implementation-v1 safety bounds, not universal economic truths. Governance can approve a new fixed implementation version with different bounds, but cannot silently change the ratios of an existing market. The flagship is created with `markupBps = 250`, `cashPayoutBps = 9_000`, and `keepPayoutBps = 9_900`.
+
+## 5.3 Market classes
 
 ### Protocol flagship markets
 
@@ -934,7 +984,7 @@ USDG markets buy through `$DRAW/USDG` or route through the deeper canonical pool
 
 When the puller selects `$DRAW`:
 
-1. 85% of selected backing becomes swap input;
+1. the market's `cashPayoutBps` share of selected backing becomes swap input (90% in the flagship target);
 2. the settlement router executes a bounded v4 swap;
 3. `$DRAW` is delivered to the puller;
 4. the NFT returns to the position owner.
@@ -1088,13 +1138,15 @@ Immutable per-market parameters:
 ```text
 settlement asset
 weight formula version
-markup formula
-keep payout ratio
-cash payout ratio
+markup formula and markupBps
+keepPayoutBps
+cashPayoutBps
 decision window
 position-earning entitlement
 maximum creator fee
 ```
+
+The factory validates payout ratios against the fixed implementation version's bounds before deployment. The market passes the accepted ratios into its paired settlement engine; neither ratio is a global constant or a post-deployment governance setting.
 
 Governable with notice:
 
@@ -1326,8 +1378,10 @@ The application can sponsor low-cost interactions while setting spend limits and
 - payment asset;
 - maximum spend;
 - expected price;
-- possible payout range;
-- markup;
+- immutable markup, cash payout, and keep payout ratios;
+- token-independent cash-floor RTP, using `cashPayoutBps / (10,000 + markupBps)`;
+- possible payout range, with collectible option value and `$DRAW` output clearly labeled as estimates rather than guaranteed cash return;
+- gas, swap, and payment-routing costs that are excluded from the cash-floor RTP;
 - legal disclosure;
 - referral attribution.
 
@@ -1406,6 +1460,18 @@ Required services:
 | Archive data pipeline   | Historical points and leaderboards              |
 
 Every UI quote must still include an onchain maximum price.
+
+## 24.1 Puller-first launch and analytics gate
+
+Before a paid flagship launch, the pre-pull confirmation must disclose the immutable markup, cash, and keep ratios; cash-floor RTP; the distinction between cash, collectible, and `$DRAW` outcomes; and excluded gas and routing costs. The event schema and production indexer must also be able to derive:
+
+- settlement choice mix, including cash, keep, `$DRAW`, relist, and forced outcomes;
+- repeat-pull demand by wallet cohort and time window;
+- pull concentration, including the share attributable to the largest wallets or cohorts;
+- realized token-independent RTP from settlement-asset entitlements and pull prices, before gas;
+- model-versus-reality comparisons for volume, settlement mix, and cohort retention under each deployed economic policy.
+
+The current frontend market/indexer adapter is mock data and does not satisfy this evidence gate. Once indexed production data exists, publish the model inputs beside the observed metrics and label sample windows and cohort definitions. Governance should pre-register the review window and scale/no-scale thresholds before launch; a passing contract test or favorable token price is not evidence of sustainable pull demand. Comparative market evidence can inform the hypothesis but does not prove that the policy caused observed demand.
 
 ---
 
@@ -1607,7 +1673,7 @@ Base pull proceeds:
     100% equally to active positions
 
 Markup:
-    10% of EV
+    2.5% of EV (markupBps = 250)
 
 Reward allocation:
     10% of markup buys $DRAW for active positions
@@ -1618,13 +1684,16 @@ Remaining markup:
     94% active positions
 
 Keep payout:
-    99% of selected backing
+    99% of selected backing (keepPayoutBps = 9,900)
 
 Cash payout:
-    85% of selected backing
+    90% of selected backing (cashPayoutBps = 9,000)
 
 $DRAW payout:
-    $DRAW purchased using 85% of selected backing
+    $DRAW purchased using 90% of selected backing
+
+Cash-floor RTP:
+    90% / 102.5% = 87.8%, before gas and routing costs
 
 Decision period:
     24 hours

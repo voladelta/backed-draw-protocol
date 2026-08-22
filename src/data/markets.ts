@@ -1,4 +1,5 @@
 import type { Market, Position } from "@/types/protocol"
+import { economicProfiles } from "@/lib/economics"
 
 const image = (seed: string) => `https://picsum.photos/seed/${seed}/900/1100`
 
@@ -41,6 +42,7 @@ export const markets: Market[] = [
     crown: "Chromie Squiggle #7583",
     heroImage: image("spectral-forms"),
     accent: "#ccff00",
+    economicPolicy: economicProfiles.flagship,
     positions: [
       {
         id: "p1",
@@ -116,6 +118,7 @@ export const markets: Market[] = [
     crown: "Charizard 1st Ed. PSA 10",
     heroImage: image("charizard-card"),
     accent: "#ffb84d",
+    economicPolicy: economicProfiles.flagship,
     positions: [
       {
         id: "t1",
@@ -181,6 +184,7 @@ export const markets: Market[] = [
     crown: "CryptoPunk #7804",
     heroImage: image("pixel-punk-7804"),
     accent: "#60a5fa",
+    economicPolicy: economicProfiles.flagship,
     positions: [
       {
         id: "l1",

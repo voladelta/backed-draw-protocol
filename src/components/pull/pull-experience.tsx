@@ -24,6 +24,7 @@ import { recentDraws } from "@/data/markets"
 import { ALL_POOLS_ID, poolOptions } from "@/data/pool-selection"
 import { spinAudio } from "@/audio/spin-audio"
 import { formatValue } from "@/lib/utils"
+import { calculatePullerEconomics } from "@/lib/economics"
 import type { Market, Position, PullStage, SettlementAsset } from "@/types/protocol"
 import { drawRouterAbi, drawRouterAddress, getPullRouteConfig } from "@/web3/contracts"
 import type { DeckCycleRequest } from "@/components/nft/nft-card-scene"
@@ -35,6 +36,7 @@ const NftCardScene = lazy(() =>
 const shortenWallet = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
 const PREVIEW_SHUFFLE_DURATION_MS = 2600
 const PREVIEW_REVEAL_ACTION_LEAD_MS = 300
+const formatPercentBps = (basisPoints: number) => `${(basisPoints / 100).toFixed(1)}%`
 
 const fadeIn = stylex.keyframes({
   from: { opacity: 0 },
@@ -408,7 +410,16 @@ function PullCommand({
         ? settlementTotal / 3500
         : settlementTotal * 3500
   const route = isAllPools ? undefined : getPullRouteConfig(market.id, paymentAsset, market.asset)
-  const canSubmit = Boolean(isConnected && address && route?.nativeInput)
+  const hasEconomicPolicy = market.economicPolicy !== null
+  const policyUnavailable = !isAllPools && !hasEconomicPolicy
+  const canSubmit = Boolean(isConnected && address && route?.nativeInput && hasEconomicPolicy)
+  const pullerEconomics = market.economicPolicy
+    ? calculatePullerEconomics({
+        policy: market.economicPolicy,
+        keepShareBps: 0,
+        keptAssetValueBps: 0,
+      })
+    : null
   const resetLocally = () => {
     if (previewRevealTimer.current !== null) window.clearTimeout(previewRevealTimer.current)
     setLivePending(false)
@@ -439,6 +450,7 @@ function PullCommand({
     [],
   )
   const requestPull = () => {
+    if (policyUnavailable) return
     spinAudio.prepare()
     if (!canSubmit || !route || !address || !drawRouterAddress) {
       setLivePending(false)
@@ -530,7 +542,10 @@ function PullCommand({
         <p className="settlement-intro">
           Your position is revealed. Choose an exit or put it back to work.
         </p>
-        <SettlementActions onSettle={onSettle} />
+        <SettlementActions
+          cashPayoutBps={market.economicPolicy?.cashPayoutBps}
+          onSettle={onSettle}
+        />
       </aside>
     )
   if (stage === "settled") {
@@ -583,9 +598,53 @@ function PullCommand({
         <small>
           {isAllPools
             ? `One random result across ${poolOptions.length - 1} active pools`
-            : "Expected value + 10% markup"}
+            : market.economicPolicy
+              ? `${formatPercentBps(market.economicPolicy.markupBps)} markup over expected value`
+              : "Economics unavailable"}
         </small>
       </div>
+      {pullerEconomics && market.economicPolicy ? (
+        <section aria-labelledby="pull-return-heading" className="pull-return-breakdown">
+          <div className="pull-return-heading">
+            <h3 id="pull-return-heading">Puller return</h3>
+            <strong>{formatPercentBps(pullerEconomics.guaranteedCashFloorRtpBps)}</strong>
+          </div>
+          <p>Guaranteed cash-floor RTP</p>
+          <dl>
+            <div>
+              <dt>Pull price</dt>
+              <dd>
+                {formatPercentBps(pullerEconomics.pullPriceMultiplierBps)} of expected backing
+              </dd>
+            </div>
+            <div>
+              <dt>Markup</dt>
+              <dd>{formatPercentBps(market.economicPolicy.markupBps)}</dd>
+            </div>
+            <div>
+              <dt>Cash bid</dt>
+              <dd>{formatPercentBps(market.economicPolicy.cashPayoutBps)} of revealed backing</dd>
+            </div>
+            <div>
+              <dt>Keep settlement fee</dt>
+              <dd>
+                {formatPercentBps(pullerEconomics.backerKeepSettlementFeeBps)} of backing, charged
+                to the backer
+              </dd>
+            </div>
+          </dl>
+          <small>
+            Cash-floor RTP excludes collectible upside, token value, gas, and routing costs. Those
+            values are not guaranteed.
+          </small>
+        </section>
+      ) : null}
+      {policyUnavailable ? (
+        <p id="policy-unavailable" role="alert">
+          This market’s settlement policy is unavailable. Pulling is disabled until its terms can be
+          verified.
+        </p>
+      ) : null}
       <div className="count-control">
         <span>Quantity</span>
         <div>
@@ -643,30 +702,46 @@ function PullCommand({
       ) : null}
       <button
         aria-busy={isPending}
-        aria-describedby={error ? "pull-error" : undefined}
+        aria-describedby={
+          error ? "pull-error" : policyUnavailable ? "policy-unavailable" : undefined
+        }
         className="pull-cta"
-        disabled={isPending}
+        disabled={isPending || policyUnavailable}
         onClick={requestPull}
         type="button"
       >
         <Sparkles />{" "}
-        {isPending ? "Check wallet…" : canSubmit ? "Sign and pull" : "Run preview pull"}
+        {isPending
+          ? "Check wallet…"
+          : policyUnavailable
+            ? "Economics unavailable"
+            : canSubmit
+              ? "Sign and pull"
+              : "Run preview pull"}
       </button>
       <p className="command-foot">
         <ShieldCheck />{" "}
         {canSubmit
           ? "Ready to submit protected order"
-          : isAllPools
-            ? "Preview mode · aggregate orders require a multi-market router"
-            : paymentAsset === "USDG"
-              ? "Preview mode · USDG approval flow is not enabled yet"
-              : "Preview mode · configure route to transact"}
+          : policyUnavailable
+            ? "Paid and preview pulls are blocked until the market policy is available"
+            : isAllPools
+              ? "Preview mode · aggregate orders require a multi-market router"
+              : paymentAsset === "USDG"
+                ? "Preview mode · USDG approval flow is not enabled yet"
+                : "Preview mode · configure route to transact"}
       </p>
     </aside>
   )
 }
 
-function SettlementActions({ onSettle }: { onSettle: PullExperienceProps["onSettle"] }) {
+function SettlementActions({
+  cashPayoutBps,
+  onSettle,
+}: {
+  cashPayoutBps?: number
+  onSettle: PullExperienceProps["onSettle"]
+}) {
   return (
     <div className="settlement-actions">
       <button onClick={() => onSettle("keep")} type="button">
@@ -681,7 +756,11 @@ function SettlementActions({ onSettle }: { onSettle: PullExperienceProps["onSett
         <Coins />
         <span>
           <strong>Take cash</strong>
-          <small>85% of backing</small>
+          <small>
+            {cashPayoutBps !== undefined
+              ? `${formatPercentBps(cashPayoutBps)} of backing`
+              : "Cash bid follows the revealed pool"}
+          </small>
         </span>
         <ChevronDown />
       </button>

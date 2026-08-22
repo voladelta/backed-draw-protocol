@@ -221,7 +221,8 @@ export function HowItWorksPage() {
           deeper backing is likely to stay active longer and earn from more draws.
         </HowStep>
         <HowStep icon={Coins} number="03" title="Pull price is pool-derived">
-          A pull costs the pool’s expected value plus a 10% markup. The base expected-value proceeds
+          Each market publishes its settlement policy before you pull. In the flagship market, a
+          pull costs the pool’s expected value plus a 2.5% markup. The base expected-value proceeds
           are shared equally among active positions; the markup funds backers, DRAW rewards, the
           Crown, and protocol operations.
         </HowStep>
@@ -244,15 +245,23 @@ export function HowItWorksPage() {
         <div>
           <article>
             <strong>Keep</strong>
-            <span>You receive the collectible. The backer receives 99% of backing.</span>
+            <span>
+              You receive the collectible. In the flagship market, the backer receives 99% of
+              backing.
+            </span>
           </article>
           <article>
             <strong>Cash</strong>
-            <span>You receive 85% of backing. The collectible returns to its backer.</span>
+            <span>
+              You receive 90% of backing in the flagship market. The collectible returns to its
+              backer.
+            </span>
           </article>
           <article>
             <strong>$DRAW</strong>
-            <span>85% of backing is swapped into $DRAW with protected routing.</span>
+            <span>
+              90% of backing is swapped into $DRAW in the flagship market, with protected routing.
+            </span>
           </article>
           <article>
             <strong>Relist</strong>
@@ -260,8 +269,8 @@ export function HowItWorksPage() {
           </article>
         </div>
         <small>
-          You have 24 hours to decide. After that, anyone can call forceKeep; Keep becomes the
-          default outcome.
+          Ratios can vary by market and are shown before a paid pull. You have 24 hours to decide.
+          After that, anyone can call forceKeep; Keep becomes the default outcome.
         </small>
       </section>
       <section className="how-ledger">

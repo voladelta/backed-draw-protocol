@@ -69,7 +69,9 @@ contract DrawMarketTest is Test {
             collectionWindow: 0,
             randomnessTimeout: 1 hours,
             decisionWindow: 24 hours,
-            markupBps: 1_000
+            markupBps: 250,
+            cashPayoutBps: 9_000,
+            keepPayoutBps: 9_900
         });
         DrawMarket implementation = new DrawMarket();
         address marketAddress = Clones.clone(address(implementation));
@@ -87,7 +89,9 @@ contract DrawMarketTest is Test {
             config.rewardController,
             config.minBacking,
             config.maxBacking,
-            config.decisionWindow
+            config.decisionWindow,
+            config.cashPayoutBps,
+            config.keepPayoutBps
         );
         coordinator = new EpochCoordinator(
             config.marketId,
@@ -132,7 +136,7 @@ contract DrawMarketTest is Test {
         assertApproxEqAbs(market.positionProbability(2), 285_714_285_714_285_714, 2);
         assertApproxEqAbs(market.positionProbability(3), 142_857_142_857_142_857, 2);
         assertApproxEqAbs(market.currentExpectedValue(), 171_428_571_428_571_428_571, 2);
-        assertEq(market.currentPullPrice(), 188_571_428_571_428_571_429);
+        assertEq(market.currentPullPrice(), 175_714_285_714_285_714_286);
         assertTrue(market.solvent());
     }
 
@@ -175,7 +179,7 @@ contract DrawMarketTest is Test {
             PullReceipt(address(engine.pullReceipt())).receiptData(1);
         vm.prank(buyer);
         engine.settleCash(1);
-        assertEq(engine.settlementClaims(buyer), uint256(receipt.selectedBacking) * 8_500 / 10_000);
+        assertEq(engine.settlementClaims(buyer), uint256(receipt.selectedBacking) * 9_000 / 10_000);
         assertGt(engine.securityLiability(), 0);
         assertGt(engine.buybackLiability(), 0);
         assertGt(engine.protocolLiability(), 0);
@@ -189,7 +193,7 @@ contract DrawMarketTest is Test {
         (,, address previousOwner,,,,) = engine.selectedPositions(1);
         vm.prank(buyer);
         engine.settleDraw(1, 80 ether, hex"1234");
-        uint256 expectedBuyerInput = uint256(receipt.selectedBacking) * 8_500 / 10_000;
+        uint256 expectedBuyerInput = uint256(receipt.selectedBacking) * 9_000 / 10_000;
         assertEq(rewards.settlementInput(buyer, address(asset)), expectedBuyerInput);
         assertEq(rewards.lastMinDrawOut(), 80 ether);
         assertEq(collection.ownerOf(receipt.positionId), previousOwner);
@@ -511,9 +515,9 @@ contract DrawMarketCumulativeRoundingTest is Test {
     }
 
     function testCumulativeRewardRoundingRemainsPayable() external {
-        _deployMarket(100);
+        _deployMarket(400);
         for (uint256 drawNumber = 1; drawNumber <= 4; ++drawNumber) {
-            _drawNewestPositionAndRelist(drawNumber, 100, 110);
+            _drawNewestPositionAndRelist(drawNumber, 400, 410);
         }
 
         (uint256 cash, uint256 rewardInput) = market.pendingPositionEarnings(1);
@@ -557,7 +561,9 @@ contract DrawMarketCumulativeRoundingTest is Test {
             collectionWindow: 0,
             randomnessTimeout: 1 hours,
             decisionWindow: 24 hours,
-            markupBps: 1_000
+            markupBps: 250,
+            cashPayoutBps: 9_000,
+            keepPayoutBps: 9_900
         });
 
         DrawMarket implementation = new DrawMarket();
@@ -576,7 +582,9 @@ contract DrawMarketCumulativeRoundingTest is Test {
             config.rewardController,
             config.minBacking,
             config.maxBacking,
-            config.decisionWindow
+            config.decisionWindow,
+            config.cashPayoutBps,
+            config.keepPayoutBps
         );
         coordinator = new EpochCoordinator(
             config.marketId,

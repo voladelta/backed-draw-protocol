@@ -22,7 +22,9 @@ contract SettlementEngineDeployer {
                 config.rewardController,
                 config.minBacking,
                 config.maxBacking,
-                config.decisionWindow
+                config.decisionWindow,
+                config.cashPayoutBps,
+                config.keepPayoutBps
             )
         );
     }

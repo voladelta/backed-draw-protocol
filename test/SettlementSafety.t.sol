@@ -143,6 +143,66 @@ contract SettlementSafetyTest is Test {
         registry = new ProtocolRegistry(governor);
     }
 
+    function testConfiguredCashPayoutControlsCashAndDrawSettlements() external {
+        _deployMarketWithPolicy(8_123, 9_567);
+        assertEq(engine.cashPayoutBps(), 8_123);
+        assertEq(engine.keepPayoutBps(), 9_567);
+        _deposit(alice, 901, 100 ether);
+        _drawOne(buyer, 901);
+
+        vm.prank(buyer);
+        engine.settleCash(1);
+
+        assertEq(engine.settlementClaims(buyer), 81.23 ether);
+        assertTrue(market.solvent());
+
+        _deployMarketWithPolicy(8_123, 9_567);
+        _deposit(alice, 902, 100 ether);
+        _drawOne(buyer, 902);
+
+        vm.prank(buyer);
+        uint256 drawAmount = engine.settleDraw(1, 81.23 ether, "");
+
+        assertEq(drawAmount, 81.23 ether);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 81.23 ether);
+        assertTrue(market.solvent());
+    }
+
+    function testConfiguredKeepPayoutControlsKeepRelistAndForceKeep() external {
+        _deployMarketWithPolicy(8_123, 9_567);
+        _deposit(alice, 911, 100 ether);
+        _drawOne(buyer, 911);
+        (,,,,, uint256 keepEarnings,) = engine.selectedPositions(1);
+
+        vm.prank(buyer);
+        engine.settleKeep(1);
+
+        assertEq(engine.settlementClaims(alice), 95.67 ether + keepEarnings);
+        assertTrue(market.solvent());
+
+        _deployMarketWithPolicy(8_123, 9_567);
+        _deposit(alice, 912, 100 ether);
+        _drawOne(buyer, 912);
+        (,,,,, uint256 relistEarnings,) = engine.selectedPositions(1);
+
+        vm.prank(buyer);
+        engine.settleRelist(1, 100 ether);
+
+        assertEq(engine.settlementClaims(alice), 95.67 ether + relistEarnings);
+        assertTrue(market.solvent());
+
+        _deployMarketWithPolicy(8_123, 9_567);
+        _deposit(alice, 913, 100 ether);
+        _drawOne(buyer, 913);
+        (,,,,, uint256 forceKeepEarnings,) = engine.selectedPositions(1);
+        vm.warp(_receiptData(1).decisionDeadline + 1);
+
+        engine.forceKeep(1);
+
+        assertEq(engine.settlementClaims(alice), 95.67 ether + forceKeepEarnings);
+        assertTrue(market.solvent());
+    }
+
     function testSettleKeepDefersRejectedDeliveryAndClaimOwnerCanRedirect() external {
         _deployMarket(address(0), 1_000 ether, buyback);
         _deposit(alice, 1, 100 ether);
@@ -191,7 +251,7 @@ contract SettlementSafetyTest is Test {
         vm.prank(buyer);
         engine.settleCash(1);
 
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(engine.settlementClaims(buyer), 90 ether);
         _assertDeferredClaim(owner, 1);
         owner.claimNFT(engine, address(collection), 1, redirectedReceiver);
         assertEq(collection.ownerOf(1), redirectedReceiver);
@@ -204,7 +264,7 @@ contract SettlementSafetyTest is Test {
         vm.prank(buyer);
         engine.settleDraw(1, 80 ether, hex"1234");
 
-        assertEq(rewards.settlementInput(buyer, address(asset)), 85 ether);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 90 ether);
         assertEq(rewards.lastMinDrawOut(), 80 ether);
         assertEq(rewards.lastRouteData(), hex"1234");
         _assertDeferredClaim(owner, 1);
@@ -249,7 +309,7 @@ contract SettlementSafetyTest is Test {
         vm.prank(buyer);
         engine.settleCash(1);
 
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(engine.settlementClaims(buyer), 90 ether);
         _assertSettledWithClaim(alice, cashEarnings);
     }
 
@@ -263,7 +323,7 @@ contract SettlementSafetyTest is Test {
         vm.prank(buyer);
         engine.settleDraw(1, 84 ether, hex"cafe");
 
-        assertEq(rewards.settlementInput(buyer, address(asset)), 85 ether);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 90 ether);
         _assertSettledWithClaim(alice, cashEarnings);
     }
 
@@ -289,7 +349,7 @@ contract SettlementSafetyTest is Test {
 
         vm.prank(buyer);
         vm.expectRevert(MockRewardController.SettlementSwapRejected.selector);
-        engine.settleDraw(1, 85 ether, hex"deadbeef");
+        engine.settleDraw(1, 90 ether, hex"deadbeef");
 
         assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Revealed));
         (,,,, uint128 backing,,) = engine.selectedPositions(1);
@@ -304,7 +364,7 @@ contract SettlementSafetyTest is Test {
         vm.prank(buyer);
         engine.settleCash(1);
         assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Settled));
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(engine.settlementClaims(buyer), 90 ether);
     }
 
     function testNoOutputAdapterCannotConsumeProtectedDrawSettlement() external {
@@ -320,8 +380,8 @@ contract SettlementSafetyTest is Test {
         protectedRewards.grantRole(marketRole, address(engine));
 
         vm.prank(buyer);
-        vm.expectRevert(abi.encodeWithSelector(RewardController.SlippageExceeded.selector, 0, 85 ether));
-        engine.settleDraw(1, 85 ether, "");
+        vm.expectRevert(abi.encodeWithSelector(RewardController.SlippageExceeded.selector, 0, 90 ether));
+        engine.settleDraw(1, 90 ether, "");
 
         assertEq(uint8(_receiptData(1).status), uint8(ProtocolTypes.PullStatus.Revealed));
         (,,,, uint128 backing,, uint256 rewardInput) = engine.selectedPositions(1);
@@ -382,7 +442,7 @@ contract SettlementSafetyTest is Test {
 
         assertGt(rewardInput, 0);
         assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(engine.settlementClaims(buyer), 90 ether);
         assertEq(rewards.queued(alice, address(asset)), 0);
         assertEq(asset.balanceOf(address(rewards)), 0);
         assertTrue(market.solvent());
@@ -423,7 +483,7 @@ contract SettlementSafetyTest is Test {
 
         assertGt(rewardInput, 0);
         assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
-        assertEq(engine.settlementClaims(buyer), 85 ether);
+        assertEq(engine.settlementClaims(buyer), 90 ether);
         assertEq(asset.balanceOf(address(revokedRewards)), 0);
         assertEq(collection.ownerOf(1), alice);
         assertTrue(market.solvent());
@@ -455,15 +515,15 @@ contract SettlementSafetyTest is Test {
         rewards.setRejectEnqueue(true);
 
         vm.prank(buyer);
-        uint256 drawAmount = engine.settleDraw(1, 85 ether, hex"deadbeef");
+        uint256 drawAmount = engine.settleDraw(1, 90 ether, hex"deadbeef");
 
-        assertEq(drawAmount, 85 ether);
+        assertEq(drawAmount, 90 ether);
         assertGt(rewardInput, 0);
         assertEq(engine.settlementClaims(alice), cashEarnings + rewardInput);
         assertEq(engine.settlementClaims(buyer), 0);
         assertEq(rewards.queued(alice, address(asset)), 0);
-        assertEq(rewards.settlementInput(buyer, address(asset)), 85 ether);
-        assertEq(asset.balanceOf(address(rewards)), 85 ether);
+        assertEq(rewards.settlementInput(buyer, address(asset)), 90 ether);
+        assertEq(asset.balanceOf(address(rewards)), 90 ether);
         assertEq(collection.ownerOf(1), alice);
         assertTrue(market.solvent());
     }
@@ -746,6 +806,13 @@ contract SettlementSafetyTest is Test {
         _deployMarketFromConfig(config);
     }
 
+    function _deployMarketWithPolicy(uint16 cashPayoutBps, uint16 keepPayoutBps) private {
+        ProtocolTypes.MarketConfig memory config = _config(address(0), 1_000 ether, buyback);
+        config.cashPayoutBps = cashPayoutBps;
+        config.keepPayoutBps = keepPayoutBps;
+        _deployMarketFromConfig(config);
+    }
+
     function _deployMarketFromConfig(ProtocolTypes.MarketConfig memory config) private {
         _initializeFresh(config);
         bytes32 marketRole = referrals.MARKET_ROLE();
@@ -782,7 +849,9 @@ contract SettlementSafetyTest is Test {
             config.rewardController,
             config.minBacking,
             config.maxBacking,
-            config.decisionWindow
+            config.decisionWindow,
+            config.cashPayoutBps,
+            config.keepPayoutBps
         );
         coordinator = new EpochCoordinator(
             config.marketId,
@@ -840,7 +909,9 @@ contract SettlementSafetyTest is Test {
             collectionWindow: 0,
             randomnessTimeout: 1 hours,
             decisionWindow: 24 hours,
-            markupBps: 1_000
+            markupBps: 250,
+            cashPayoutBps: 9_000,
+            keepPayoutBps: 9_900
         });
     }
 

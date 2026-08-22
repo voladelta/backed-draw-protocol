@@ -16,6 +16,7 @@ contract MarketFactory {
     error ModuleNotApproved(address module);
     error CreationNotAllowed(address creator);
     error InvalidCollectionSet();
+    error InvalidEconomicPolicy();
     error ImplementationNotApproved(uint32 version);
 
     uint32 public constant IMPLEMENTATION_VERSION = 1;
@@ -84,6 +85,9 @@ contract MarketFactory {
         }
         if (input.collectionSetId == bytes32(0) || initialCollections.length == 0) {
             revert InvalidCollectionSet();
+        }
+        if (!ProtocolTypes.isValidEconomicPolicy(input.markupBps, input.cashPayoutBps, input.keepPayoutBps)) {
+            revert InvalidEconomicPolicy();
         }
 
         uint256 marketId = nextMarketId++;

@@ -20,6 +20,21 @@ OpenZeppelin Contracts is pinned to the audited `v5.7.0` release. Market instanc
 | `ReferralRegistry`  | Permanent wallet attribution and registered referral codes                                |
 | `SwapAndPullRouter` | Exact-output payment conversion, native ETH wrapping, payout conversion and refunds       |
 
+## Immutable market economics
+
+`ProtocolTypes.MarketConfig` carries `markupBps`, `cashPayoutBps`, and `keepPayoutBps`. A market stores its markup and initializes its paired `SettlementEngine` with the two payout ratios. These values are immutable policy for that market, not global settlement constants and not settings governance can change after users enter.
+
+`MarketFactory.createMarket` applies the implementation-v1 safety bounds before deploying any component:
+
+```text
+markupBps <= 5,000
+8,000 <= cashPayoutBps <= 9,500
+9,500 <= keepPayoutBps <= 10,000
+cashPayoutBps <= keepPayoutBps
+```
+
+The bounds limit deployment risk for this fixed implementation version; they are not claims that every accepted policy will attract demand or be profitable. The puller-first flagship target is `250 / 9,000 / 9,900`, meaning 2.5% markup, 90% cash or `$DRAW` swap input, and 99% keep. Its token-independent cash-floor RTP is `9,000 / 10,250 = 87.8%` before gas, swaps, and payment routing. Collectible option value, `$DRAW` market value, and entertainment value are separate and must not be added to that guaranteed floor.
+
 ## Pull flow
 
 ```mermaid
@@ -104,7 +119,7 @@ Every successful `RewardController` swap must reduce its input-token balance by 
 3. Deploy `MarketFactory` with those fixed addresses.
 4. Register the implementation runtime code hash and approve settlement assets/modules/router.
 5. Grant the factory registry-manager and factory roles on the referral and reward controllers.
-6. Create markets through `MarketFactory.createMarket`.
+6. Create markets through `MarketFactory.createMarket`, supplying the market's immutable `markupBps`, `cashPayoutBps`, and `keepPayoutBps`. Use `250 / 9,000 / 9,900` for the flagship target.
 
 ## Production integration gates
 
@@ -115,4 +130,9 @@ The repository intentionally does not pretend local mocks are production infrast
 - canonical Robinhood Chain WETH and USDG addresses;
 - a timelock/governance deployment and role handoff;
 - external audit, invariant campaign and chain-specific finality testing;
-- collection-specific custody/valuation adapters for physical assets.
+- collection-specific custody/valuation adapters for physical assets;
+- pre-pull disclosure of the immutable ratios, token-independent cash-floor RTP, outcome-specific uncertainty, and excluded gas/routing costs;
+- a production event indexer that measures settlement choice mix, repeat/cohort pull demand, concentration, and realized token-independent RTP;
+- a public model-versus-reality view once indexed data exists, with review windows and scale/no-scale thresholds recorded before launch.
+
+The frontend's current typed market/indexer adapter is mock data. It is useful for interaction testing but is not production evidence and does not satisfy the analytics gate. External comparisons can shape scenario tests, including the explicitly labeled 10%/85% legacy stress profile, but do not prove causality.

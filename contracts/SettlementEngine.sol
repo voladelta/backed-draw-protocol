@@ -26,8 +26,6 @@ contract SettlementEngine is ReentrancyGuard {
     error RewardEnqueueMismatch(uint256 expected, uint256 actual);
 
     uint256 public constant BPS = 10_000;
-    uint256 public constant KEEP_PAYOUT_BPS = 9_900;
-    uint256 public constant CASH_PAYOUT_BPS = 8_500;
 
     struct SelectedPosition {
         address collection;
@@ -49,6 +47,8 @@ contract SettlementEngine is ReentrancyGuard {
     uint128 public immutable minBacking;
     uint128 public immutable maxBacking;
     uint32 public immutable decisionWindow;
+    uint16 public immutable cashPayoutBps;
+    uint16 public immutable keepPayoutBps;
     MarketVault public immutable vault;
     IRewardController public immutable rewardController;
     PullReceipt public immutable pullReceipt;
@@ -97,7 +97,9 @@ contract SettlementEngine is ReentrancyGuard {
         address rewardController_,
         uint128 minBacking_,
         uint128 maxBacking_,
-        uint32 decisionWindow_
+        uint32 decisionWindow_,
+        uint16 cashPayoutBps_,
+        uint16 keepPayoutBps_
     ) {
         market = market_;
         marketId = marketId_;
@@ -111,6 +113,8 @@ contract SettlementEngine is ReentrancyGuard {
         minBacking = minBacking_;
         maxBacking = maxBacking_;
         decisionWindow = decisionWindow_;
+        cashPayoutBps = cashPayoutBps_;
+        keepPayoutBps = keepPayoutBps_;
         pullReceipt = new PullReceipt("Backed Pull Receipt", "BKPULL", address(this));
     }
 
@@ -180,7 +184,7 @@ contract SettlementEngine is ReentrancyGuard {
         ProtocolTypes.PullReceiptData memory data = _requireReceiptOwner(receiptId);
         SelectedPosition memory position = selectedPositions[receiptId];
         _markSettled(receiptId, data.positionId, ProtocolTypes.SettlementChoice.Cash);
-        uint256 buyerPayout = uint256(position.backing) * CASH_PAYOUT_BPS / BPS;
+        uint256 buyerPayout = uint256(position.backing) * cashPayoutBps / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - buyerPayout, receiptReferrer[receiptId]);
         _accrueSettlementClaim(msg.sender, buyerPayout);
@@ -200,7 +204,7 @@ contract SettlementEngine is ReentrancyGuard {
         ProtocolTypes.PullReceiptData memory data = _requireReceiptOwner(receiptId);
         SelectedPosition memory position = selectedPositions[receiptId];
         _markSettled(receiptId, data.positionId, ProtocolTypes.SettlementChoice.Draw);
-        uint256 rewardAmount = uint256(position.backing) * CASH_PAYOUT_BPS / BPS;
+        uint256 rewardAmount = uint256(position.backing) * cashPayoutBps / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - rewardAmount, receiptReferrer[receiptId]);
         _consumeEarnings(position);
@@ -226,7 +230,7 @@ contract SettlementEngine is ReentrancyGuard {
         ProtocolTypes.PullReceiptData memory data = _requireReceiptOwner(receiptId);
         SelectedPosition memory position = selectedPositions[receiptId];
         _markSettled(receiptId, data.positionId, ProtocolTypes.SettlementChoice.Relist);
-        uint256 ownerPayout = uint256(position.backing) * KEEP_PAYOUT_BPS / BPS;
+        uint256 ownerPayout = uint256(position.backing) * keepPayoutBps / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - ownerPayout, receiptReferrer[receiptId]);
         _accrueSettlementClaim(position.previousOwner, ownerPayout);
@@ -304,7 +308,7 @@ contract SettlementEngine is ReentrancyGuard {
     {
         SelectedPosition memory position = selectedPositions[receiptId];
         _markSettled(receiptId, data.positionId, ProtocolTypes.SettlementChoice.Keep);
-        uint256 ownerPayout = uint256(position.backing) * KEEP_PAYOUT_BPS / BPS;
+        uint256 ownerPayout = uint256(position.backing) * keepPayoutBps / BPS;
         selectedBackingLiability -= position.backing;
         _allocateSettlementRevenue(uint256(position.backing) - ownerPayout, receiptReferrer[receiptId]);
         _accrueSettlementClaim(position.previousOwner, ownerPayout);

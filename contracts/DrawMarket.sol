@@ -193,7 +193,10 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         ) revert ZeroAddress();
         if (
             config.minBacking == 0 || config.maxBacking < config.minBacking || config.maxActivePositions == 0
-                || config.maxDrawsPerEpoch == 0 || config.markupBps > 5_000 || config.decisionWindow == 0
+                || config.maxDrawsPerEpoch == 0 || config.decisionWindow == 0
+                || !ProtocolTypes.isValidEconomicPolicy(
+                    config.markupBps, config.cashPayoutBps, config.keepPayoutBps
+                )
         ) revert InvalidConfiguration();
 
         uint8 decimals = IERC20Metadata(config.settlementAsset).decimals();

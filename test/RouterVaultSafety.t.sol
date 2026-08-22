@@ -372,7 +372,9 @@ contract RouterVaultSafetyTest is Test {
             address(rewards),
             1,
             1_000 ether,
-            24 hours
+            24 hours,
+            9_000,
+            9_900
         );
         vault.setOperators(address(engine), makeAddr("router-vault-coordinator"));
         asset.mint(address(vault), 100 ether);

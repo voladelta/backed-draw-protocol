@@ -65,7 +65,9 @@ contract EpochBoundaryTest is Test {
             collectionWindow: 0,
             randomnessTimeout: 1 hours,
             decisionWindow: 24 hours,
-            markupBps: 1_000
+            markupBps: 250,
+            cashPayoutBps: 9_000,
+            keepPayoutBps: 9_900
         });
 
         DrawMarket implementation = new DrawMarket();
@@ -84,7 +86,9 @@ contract EpochBoundaryTest is Test {
             config.rewardController,
             config.minBacking,
             config.maxBacking,
-            config.decisionWindow
+            config.decisionWindow,
+            config.cashPayoutBps,
+            config.keepPayoutBps
         );
         coordinator = new EpochCoordinator(
             config.marketId,

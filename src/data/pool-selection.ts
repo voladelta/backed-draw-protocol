@@ -28,6 +28,7 @@ export const allPoolsMarket: Market = {
   crown: "Any active collectible",
   heroImage: markets[0]?.heroImage ?? "",
   accent: "#ccff00",
+  economicPolicy: null,
   positions,
 }
 

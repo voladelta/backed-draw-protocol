@@ -63,6 +63,17 @@ library ProtocolTypes {
         uint32 randomnessTimeout;
         uint32 decisionWindow;
         uint16 markupBps;
+        uint16 cashPayoutBps;
+        uint16 keepPayoutBps;
+    }
+
+    function isValidEconomicPolicy(uint16 markupBps, uint16 cashPayoutBps, uint16 keepPayoutBps)
+        internal
+        pure
+        returns (bool)
+    {
+        return markupBps <= 5_000 && cashPayoutBps >= 8_000 && cashPayoutBps <= 9_500
+            && keepPayoutBps >= 9_500 && keepPayoutBps <= 10_000 && cashPayoutBps <= keepPayoutBps;
     }
 
     struct Position {

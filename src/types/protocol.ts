@@ -1,6 +1,13 @@
 export type SettlementAsset = "ETH" | "USDG"
 export type MarketCategory = "Art" | "PFP" | "Trading cards" | "Game assets"
 
+export type MarketEconomicPolicy = {
+  markupBps: number
+  cashPayoutBps: number
+  /** Backing returned to the position owner when the puller keeps the collectible. */
+  keepPayoutBps: number
+}
+
 export type Position = {
   id: string
   name: string
@@ -29,6 +36,7 @@ export type Market = {
   crown: string
   heroImage: string
   accent: string
+  economicPolicy: MarketEconomicPolicy | null
   positions: Position[]
 }
 

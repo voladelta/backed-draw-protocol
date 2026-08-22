@@ -24,6 +24,7 @@ contract EpochBoundaryTest is Test {
     DrawMarket internal market;
     EpochCoordinator internal coordinator;
     SettlementEngine internal engine;
+    MockRewardController internal rewards;
 
     address internal governor = makeAddr("governor");
     address internal guardian = makeAddr("guardian");
@@ -39,7 +40,7 @@ contract EpochBoundaryTest is Test {
         asset = new MockERC20("Wrapped Ether", "WETH", 18);
         collection = new MockERC721();
         randomness = new MockRandomnessAdapter();
-        MockRewardController rewards = new MockRewardController();
+        rewards = new MockRewardController();
         ReferralRegistry referrals = new ReferralRegistry(governor);
         ProtocolRegistry registry = new ProtocolRegistry(governor);
         ProtocolTypes.MarketConfig memory config = ProtocolTypes.MarketConfig({
@@ -155,6 +156,32 @@ contract EpochBoundaryTest is Test {
         assertEq(asset.balanceOf(bob) - backingBefore, 200 ether);
         assertEq(collection.ownerOf(2), bob);
         assertEq(uint8(_positionStatus(2)), uint8(ProtocolTypes.PositionStatus.Withdrawn));
+    }
+
+    function testQueuedWithdrawalDefersRewardWhenControllerRejectsEnqueue() external {
+        _startEpoch();
+        vm.prank(bob);
+        market.requestWithdrawal(2);
+        coordinator.requestRandomness();
+        randomness.setSeed(2);
+        coordinator.provideRandomness("");
+        coordinator.resolveEpoch(1);
+        coordinator.advanceEpochBoundary(1);
+
+        (,,,, uint256 rewardInput) = market.withdrawalClaims(2);
+        assertGt(rewardInput, 0);
+        rewards.setRejectEnqueue(true);
+
+        vm.prank(bob);
+        market.claimWithdrawal(2, bob);
+
+        assertEq(market.settlementClaims(bob), rewardInput);
+        assertEq(market.settlementClaimLiability(), rewardInput);
+        assertEq(rewards.queued(bob, address(asset)), 0);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+        assertEq(collection.ownerOf(2), bob);
+        assertEq(uint8(_positionStatus(2)), uint8(ProtocolTypes.PositionStatus.Withdrawn));
+        assertTrue(market.solvent());
     }
 
     function testQueuedBoundaryWorkDoesNotCloseCurrentCollectionWindow() external {

@@ -155,6 +155,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         uint256 activationRemaining
     );
     event EpochBoundaryCompleted();
+    event RewardFundingDeferred(address indexed beneficiary, uint256 amount);
 
     constructor() {
         _initialized = true;
@@ -288,19 +289,28 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function requestWithdrawal(uint256 positionId) external nonReentrant {
+        _requestWithdrawal(positionId, msg.sender);
+    }
+
+    function requestWithdrawal(uint256 positionId, address nftReceiver) external nonReentrant {
+        if (nftReceiver == address(0)) revert ZeroAddress();
+        _requestWithdrawal(positionId, nftReceiver);
+    }
+
+    function _requestWithdrawal(uint256 positionId, address nftReceiver) private {
         if (boundaryActive) revert EpochBoundaryPending();
         if (positionToken.ownerOf(positionId) != msg.sender) revert Ineligible(msg.sender);
         ProtocolTypes.Position storage position = positions[positionId];
         if (position.status == ProtocolTypes.PositionStatus.Staged) {
-            _withdraw(positionId, position, msg.sender);
+            _withdraw(positionId, position, msg.sender, nftReceiver);
         } else if (position.status == ProtocolTypes.PositionStatus.Active && _treeLocked()) {
             position.status = ProtocolTypes.PositionStatus.WithdrawalQueued;
             _withdrawalQueue.push(positionId);
             emit PositionWithdrawalQueued(positionId);
         } else if (position.status == ProtocolTypes.PositionStatus.Active) {
-            _withdraw(positionId, position, msg.sender);
+            _withdraw(positionId, position, msg.sender, nftReceiver);
         } else if (position.status == ProtocolTypes.PositionStatus.WithdrawalQueued && !_treeLocked()) {
-            _withdraw(positionId, position, msg.sender);
+            _withdraw(positionId, position, msg.sender, nftReceiver);
         } else {
             revert InvalidPositionState(positionId, position.status);
         }
@@ -415,10 +425,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (claim.cashEarnings != 0) {
             vault.releaseSettlement(claim.earningsRecipient, claim.cashEarnings);
         }
-        if (claim.rewardInput != 0) {
-            vault.releaseSettlement(address(rewardController), claim.rewardInput);
-            rewardController.enqueue(claim.earningsRecipient, settlementAsset, claim.rewardInput);
-        }
+        _fundRewardOrAccrue(claim.earningsRecipient, claim.rewardInput);
         ProtocolTypes.Position storage position = positions[positionId];
         vault.releaseNFT(nftReceiver, position.collection, position.tokenId);
         emit PositionWithdrawn(positionId, claim.owner, claim.backing, claim.cashEarnings, claim.rewardInput);
@@ -716,7 +723,12 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         );
     }
 
-    function _withdraw(uint256 positionId, ProtocolTypes.Position storage position, address owner) private {
+    function _withdraw(
+        uint256 positionId,
+        ProtocolTypes.Position storage position,
+        address owner,
+        address nftReceiver
+    ) private {
         (uint256 cash, uint256 rewardInput) = _crystallizeEarnings(position);
         if (_isTreeMember(position.status)) _removeFromTree(position);
         if (crownPositionId == positionId) {
@@ -732,12 +744,19 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         positionToken.burn(positionId);
         vault.releaseSettlement(owner, backing);
         if (cash != 0) vault.releaseSettlement(position.earningsRecipient, cash);
-        if (rewardInput != 0) {
-            vault.releaseSettlement(address(rewardController), rewardInput);
-            rewardController.enqueue(position.earningsRecipient, settlementAsset, rewardInput);
-        }
-        vault.releaseNFT(owner, position.collection, position.tokenId);
+        _fundRewardOrAccrue(position.earningsRecipient, rewardInput);
+        vault.releaseNFT(nftReceiver, position.collection, position.tokenId);
         emit PositionWithdrawn(positionId, owner, backing, cash, rewardInput);
+    }
+
+    function _fundRewardOrAccrue(address beneficiary, uint256 amount) private {
+        if (amount == 0) return;
+        try settlementEngine.dispatchMarketReward(beneficiary, amount) { }
+        catch {
+            settlementClaims[beneficiary] += amount;
+            settlementClaimLiability += amount;
+            emit RewardFundingDeferred(beneficiary, amount);
+        }
     }
 
     function _activate(uint256 positionId, ProtocolTypes.Position storage position) private {

@@ -54,7 +54,9 @@ Each draw recalculates `N`, total inverse-backing weight, expected value, and pr
 
 A randomness adapter revert, malformed response, zero request ID or request ID reused by the same adapter leaves the epoch in the observable `RandomnessRequested` state and emits `RandomnessRequestFailed`. Anyone can cancel and refund that epoch after `randomnessTimeout`. Each adapter's request IDs are permanently fenced to their originating epoch so a stale request cannot fulfill a later one.
 
-Each `resolveEpoch` budget unit covers one encountered queue entry or draw attempt, including completed, expired, ineligible and over-price orders. Receiver eligibility is evaluated with the market policy's `canReceive(receiver, selectedPositionId)` rule before selection; an ineligible order is refunded without resampling or removing the position.
+Each `resolveEpoch` budget unit covers one encountered queue entry or draw attempt, including completed, expired, ineligible and over-price orders. Receiver eligibility is evaluated with the market policy's `canReceive(receiver, selectedPositionId)` rule before selection. A denial, revert, or malformed policy response is normalized to ineligible, and that order is refunded without resampling or removing the position. Other orders may continue within the same explicit draw budget.
+
+An unexpected `resolveDraw` failure is rethrown so a caller can never mistake a partially successful selection for a refundable failure. EVM call atomicity rolls back that attempted selection. After `randomnessTimeout`, anyone can call `cancelTimedOutEpoch(maxOrders)` from `RandomnessRequested`, `RandomnessReady`, or `Resolving`; the first call enters `Refunding`, and each call refunds at most `maxOrders` unresolved orders. Resolution cannot resume from `Refunding`. Selections committed by earlier calls remain selected, while only remaining escrow is credited once before the epoch unlocks and processes its boundary queues.
 
 ## Liability conservation
 

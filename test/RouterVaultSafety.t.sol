@@ -11,6 +11,7 @@ import { SettlementEngine } from "../contracts/SettlementEngine.sol";
 import { ProtocolTypes } from "../contracts/types/ProtocolTypes.sol";
 import { MockERC20 } from "./mocks/MockERC20.sol";
 import { MockRewardController } from "./mocks/MockRewardController.sol";
+import { MockTaxedERC20 } from "./mocks/MockTaxedERC20.sol";
 
 contract RouterVaultSafetyCounterfeitMarket {
     IERC20 internal immutable _settlementAsset;
@@ -153,6 +154,36 @@ contract RouterVaultSafetyTest is Test {
         vault.releaseNFT(receiver, address(collection), 1);
 
         assertEq(collection.ownerOf(1), address(vault));
+    }
+
+    function testReleaseSettlementRejectsSenderTaxAndRollsBackTransfer() external {
+        MockTaxedERC20 taxedAsset = new MockTaxedERC20("Sender Tax", "STAX", 18);
+        MarketVault vault = new MarketVault(address(this), address(taxedAsset));
+        taxedAsset.mint(address(vault), 100 ether);
+        taxedAsset.setOutboundTax(address(vault), 1_000, true);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(MarketVault.UnsupportedTokenBehavior.selector, 10 ether, 11 ether)
+        );
+        vault.releaseSettlement(receiver, 10 ether);
+
+        assertEq(taxedAsset.balanceOf(address(vault)), 100 ether);
+        assertEq(taxedAsset.balanceOf(receiver), 0);
+    }
+
+    function testReleaseSettlementRejectsRecipientTaxAndRollsBackTransfer() external {
+        MockTaxedERC20 taxedAsset = new MockTaxedERC20("Recipient Tax", "RTAX", 18);
+        MarketVault vault = new MarketVault(address(this), address(taxedAsset));
+        taxedAsset.mint(address(vault), 100 ether);
+        taxedAsset.setOutboundTax(address(vault), 1_000, false);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(MarketVault.UnsupportedTokenBehavior.selector, 10 ether, 9 ether)
+        );
+        vault.releaseSettlement(receiver, 10 ether);
+
+        assertEq(taxedAsset.balanceOf(address(vault)), 100 ether);
+        assertEq(taxedAsset.balanceOf(receiver), 0);
     }
 
     function testTryReleaseNFTRevertsAndRollsBackTransferToWrongReceiver() external {

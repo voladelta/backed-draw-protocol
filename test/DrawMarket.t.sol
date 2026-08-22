@@ -13,12 +13,13 @@ import { MarketVault } from "../contracts/MarketVault.sol";
 import { PullReceipt } from "../contracts/tokens/PullReceipt.sol";
 import { ProtocolTypes } from "../contracts/types/ProtocolTypes.sol";
 import { MockERC20 } from "./mocks/MockERC20.sol";
+import { MockTaxedERC20 } from "./mocks/MockTaxedERC20.sol";
 import { MockERC721 } from "./mocks/MockERC721.sol";
 import { MockRandomnessAdapter } from "./mocks/MockRandomnessAdapter.sol";
 import { MockRewardController } from "./mocks/MockRewardController.sol";
 
 contract DrawMarketTest is Test {
-    MockERC20 internal asset;
+    MockTaxedERC20 internal asset;
     MockERC721 internal collection;
     MockRandomnessAdapter internal randomness;
     MockRewardController internal rewards;
@@ -40,7 +41,7 @@ contract DrawMarketTest is Test {
     address internal dave = makeAddr("dave");
 
     function setUp() external {
-        asset = new MockERC20("Wrapped Ether", "WETH", 18);
+        asset = new MockTaxedERC20("Wrapped Ether", "WETH", 18);
         collection = new MockERC721();
         randomness = new MockRandomnessAdapter();
         rewards = new MockRewardController();
@@ -216,6 +217,90 @@ contract DrawMarketTest is Test {
         market.requestWithdrawal(3);
 
         assertEq(market.crownPositionId(), 2);
+    }
+
+    function testCrownSuccessionRecomputesAfterIncumbentBackingDecrease() external {
+        assertEq(market.crownPositionId(), 3);
+
+        vm.prank(carol);
+        market.requestBackingChange(3, 150 ether);
+
+        assertEq(market.crownPositionId(), 2);
+        assertEq(market.activePositionCount(), 3);
+        assertEq(market.backingLiability(), 450 ether);
+        assertEq(asset.balanceOf(address(market.vault())), market.totalLiabilities());
+    }
+
+    function testSenderTaxOnBackingReductionRollsBackAccountingAndCrownChange() external {
+        asset.setOutboundTax(address(market.vault()), 1_000, true);
+
+        vm.prank(carol);
+        vm.expectRevert(
+            abi.encodeWithSelector(MarketVault.UnsupportedTokenBehavior.selector, 250 ether, 275 ether)
+        );
+        market.requestBackingChange(3, 150 ether);
+
+        (,, uint128 backing,,, ProtocolTypes.PositionStatus status,,,,,,) = market.positions(3);
+        assertEq(backing, 400 ether);
+        assertEq(uint8(status), uint8(ProtocolTypes.PositionStatus.Active));
+        assertEq(market.crownPositionId(), 3);
+        assertEq(market.backingLiability(), 700 ether);
+        assertEq(asset.balanceOf(address(market.vault())), 700 ether);
+        assertEq(asset.balanceOf(carol), 0);
+    }
+
+    function testCrownSuccessionUsesDeterministicTiesAndCanRepeat() external {
+        vm.prank(carol);
+        market.requestBackingChange(3, 200 ether);
+        assertEq(market.crownPositionId(), 2, "lower slot wins first backing tie");
+
+        vm.prank(carol);
+        market.requestBackingChange(3, 100 ether);
+        assertEq(market.crownPositionId(), 2, "non-incumbent reduction does not disturb Crown");
+
+        vm.prank(bob);
+        market.requestBackingChange(2, 100 ether);
+        assertEq(market.crownPositionId(), 1, "lower slot wins repeated backing tie");
+    }
+
+    function testCrownSuccessionAfterRepeatedFullRemovalEndsAtZeroSentinel() external {
+        vm.prank(carol);
+        market.requestWithdrawal(3);
+        assertEq(market.crownPositionId(), 2);
+
+        vm.prank(bob);
+        market.requestWithdrawal(2);
+        assertEq(market.crownPositionId(), 1);
+
+        vm.prank(alice);
+        market.requestWithdrawal(1);
+        assertEq(market.crownPositionId(), 0);
+        assertEq(market.activePositionCount(), 0);
+        assertEq(market.totalWeight(), 0);
+    }
+
+    function testFuzzCrownSuccessionTracksTreeAcrossRepeatedIncumbentDecreases(
+        uint96 carolBacking,
+        uint96 bobBacking
+    ) external {
+        carolBacking = uint96(bound(carolBacking, 1 ether, 199 ether));
+        bobBacking = uint96(bound(bobBacking, 1 ether, 99 ether));
+
+        vm.prank(carol);
+        market.requestBackingChange(3, uint128(carolBacking));
+        assertEq(market.crownPositionId(), 2);
+
+        vm.prank(bob);
+        market.requestBackingChange(2, uint128(bobBacking));
+        uint256 expectedCrown = carolBacking > 100 ether ? 3 : 1;
+        assertEq(market.crownPositionId(), expectedCrown);
+
+        uint256 expectedBacking = 100 ether + uint256(carolBacking) + uint256(bobBacking);
+        uint256 expectedWeight = 1e36 / 100 ether + 1e36 / carolBacking + 1e36 / bobBacking;
+        assertEq(market.backingLiability(), expectedBacking);
+        assertEq(market.totalWeight(), expectedWeight);
+        assertEq(market.activePositionCount(), 3);
+        assertEq(asset.balanceOf(address(market.vault())), market.totalLiabilities());
     }
 
     function testSelectedCrownIsReassignedBeforeEpochFinishes() external {

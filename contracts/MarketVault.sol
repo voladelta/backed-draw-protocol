@@ -52,7 +52,17 @@ contract MarketVault is IERC721Receiver {
     }
 
     function releaseSettlement(address to, uint256 amount) external onlyMarket {
+        uint256 beforeVaultBalance = settlementAsset.balanceOf(address(this));
+        uint256 beforeRecipientBalance = settlementAsset.balanceOf(to);
         settlementAsset.safeTransfer(to, amount);
+        uint256 afterVaultBalance = settlementAsset.balanceOf(address(this));
+        uint256 afterRecipientBalance = settlementAsset.balanceOf(to);
+        uint256 spent = beforeVaultBalance >= afterVaultBalance ? beforeVaultBalance - afterVaultBalance : 0;
+        if (spent != amount) revert UnsupportedTokenBehavior(amount, spent);
+        uint256 received = afterRecipientBalance >= beforeRecipientBalance
+            ? afterRecipientBalance - beforeRecipientBalance
+            : 0;
+        if (received != amount) revert UnsupportedTokenBehavior(amount, received);
     }
 
     function depositNFT(address from, address collection, uint256 tokenId) external onlyMarket {

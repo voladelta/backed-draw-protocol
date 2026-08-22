@@ -77,6 +77,12 @@ contract SettlementSafetyRejectingReceiver is IERC721Receiver {
         engine.claimNFT(collection, tokenId, receiver);
     }
 
+    function claimMarketNFT(DrawMarket market, address collection, uint256 tokenId, address receiver)
+        external
+    {
+        market.claimNFT(collection, tokenId, receiver);
+    }
+
     function onERC721Received(address, address, uint256, bytes calldata) external view returns (bytes4) {
         if (msg.sender == rejectedCollection) revert("collection rejected");
         return IERC721Receiver.onERC721Received.selector;
@@ -477,6 +483,162 @@ contract SettlementSafetyTest is Test {
         assertEq(uint8(status), uint8(ProtocolTypes.PositionStatus.Withdrawn));
     }
 
+    function testImmediateWithdrawalDefersRejectingNFTWithoutBlockingBacking() external {
+        SettlementSafetyRejectingReceiver owner = _deployWithRejectingPosition(1);
+
+        owner.requestWithdrawal(market, 1, address(owner));
+
+        assertEq(asset.balanceOf(address(owner)), 100 ether);
+        assertEq(collection.ownerOf(1), address(vault));
+        assertEq(market.pendingNFTClaims(address(collection), 1), address(owner));
+        owner.claimMarketNFT(market, address(collection), 1, redirectedReceiver);
+        assertEq(collection.ownerOf(1), redirectedReceiver);
+        assertEq(market.pendingNFTClaims(address(collection), 1), address(0));
+    }
+
+    function testImmediateWithdrawalOwnerCanRedirectDenylistedBackingClaim() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        asset.setRejectedRecipient(alice, true);
+
+        vm.prank(alice);
+        market.requestWithdrawal(1, redirectedReceiver);
+
+        assertEq(collection.ownerOf(1), redirectedReceiver);
+        assertEq(market.settlementClaims(alice), 100 ether);
+        assertEq(market.settlementClaimLiability(), 100 ether);
+        assertTrue(market.solvent());
+
+        vm.prank(alice);
+        vm.expectRevert(DrawMarket.ZeroAddress.selector);
+        market.claimSettlement(address(0));
+        assertEq(market.settlementClaims(alice), 100 ether);
+
+        vm.prank(governor);
+        vm.expectRevert(DrawMarket.NothingToClaim.selector);
+        market.claimSettlement(redirectedReceiver);
+
+        uint256 receiverBefore = asset.balanceOf(redirectedReceiver);
+        vm.prank(alice);
+        market.claimSettlement(redirectedReceiver);
+        assertEq(asset.balanceOf(redirectedReceiver) - receiverBefore, 100 ether);
+        assertEq(market.settlementClaims(alice), 0);
+    }
+
+    function testDistinctDenylistedEarningsRecipientOwnsCashAndRewardFallback() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        address earningsRecipient = makeAddr("distinct-earnings-recipient");
+        _depositFor(alice, 1, 100 ether, earningsRecipient);
+        _depositFor(alice, 2, 200 ether, earningsRecipient);
+        _drawOne(buyer, 31);
+        uint256 selectedPositionId = _receiptData(1).positionId;
+        uint256 survivor = selectedPositionId == 1 ? 2 : 1;
+        (uint256 cash, uint256 rewardInput) = market.pendingPositionEarnings(survivor);
+        assertGt(cash, 0);
+        assertGt(rewardInput, 0);
+        asset.setRejectedRecipient(earningsRecipient, true);
+        rewards.setRejectEnqueue(true);
+
+        uint256 ownerBefore = asset.balanceOf(alice);
+        vm.prank(alice);
+        market.requestWithdrawal(survivor, redirectedReceiver);
+
+        uint256 backing = survivor == 1 ? 100 ether : 200 ether;
+        uint256 earningsClaim = cash + rewardInput;
+        assertEq(asset.balanceOf(alice) - ownerBefore, backing);
+        assertEq(collection.ownerOf(survivor), redirectedReceiver);
+        assertEq(market.settlementClaims(earningsRecipient), earningsClaim);
+        assertEq(rewards.queued(earningsRecipient, address(asset)), 0);
+
+        uint256 ownerClaim = market.settlementClaims(alice);
+        assertGt(ownerClaim, 0, "Crown fallback makes ownership separation adversarial");
+        uint256 receiverBefore = asset.balanceOf(redirectedReceiver);
+        vm.prank(alice);
+        market.claimSettlement(redirectedReceiver);
+        assertEq(asset.balanceOf(redirectedReceiver) - receiverBefore, ownerClaim);
+        assertEq(market.settlementClaims(earningsRecipient), earningsClaim);
+
+        receiverBefore = asset.balanceOf(redirectedReceiver);
+        vm.prank(earningsRecipient);
+        market.claimSettlement(redirectedReceiver);
+        assertEq(asset.balanceOf(redirectedReceiver) - receiverBefore, earningsClaim);
+    }
+
+    function testQueuedDenylistedOwnerCanExitAndRedirectBacking() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        _deposit(alice, 2, 200 ether);
+        uint256 price = market.currentPullPrice();
+        ProtocolTypes.PullOrderInput memory input = ProtocolTypes.PullOrderInput({
+            receiver: buyer,
+            drawCount: 1,
+            maxUnitPrice: SafeCast.toUint128(price),
+            maxTotalPrice: SafeCast.toUint128(price),
+            deadline: uint48(block.timestamp + 1),
+            referralCode: bytes32(0)
+        });
+        vm.prank(buyer);
+        coordinator.requestPull(input);
+        vm.prank(alice);
+        market.requestWithdrawal(1);
+        coordinator.requestRandomness();
+        randomness.setSeed(32);
+        coordinator.provideRandomness("");
+        vm.warp(block.timestamp + 2);
+        coordinator.resolveEpoch(1);
+        coordinator.advanceEpochBoundary(1);
+        asset.setRejectedRecipient(alice, true);
+
+        vm.prank(alice);
+        market.claimWithdrawal(1, redirectedReceiver);
+
+        assertEq(collection.ownerOf(1), redirectedReceiver);
+        assertEq(market.settlementClaims(alice), 100 ether);
+        assertTrue(market.solvent());
+        uint256 receiverBefore = asset.balanceOf(redirectedReceiver);
+        vm.prank(alice);
+        market.claimSettlement(redirectedReceiver);
+        assertEq(asset.balanceOf(redirectedReceiver) - receiverBefore, 100 ether);
+    }
+
+    function testRefundOwnerCanRedirectDenylistedRefund() external {
+        _deployMarket(address(0), 1_000 ether, buyback);
+        _deposit(alice, 1, 100 ether);
+        uint256 price = market.currentPullPrice();
+        ProtocolTypes.PullOrderInput memory input = ProtocolTypes.PullOrderInput({
+            receiver: buyer,
+            drawCount: 1,
+            maxUnitPrice: SafeCast.toUint128(price),
+            maxTotalPrice: SafeCast.toUint128(price),
+            deadline: uint48(block.timestamp + 1),
+            referralCode: bytes32(0)
+        });
+        vm.prank(buyer);
+        coordinator.requestPull(input);
+        coordinator.requestRandomness();
+        randomness.setSeed(33);
+        coordinator.provideRandomness("");
+        vm.warp(block.timestamp + 2);
+        coordinator.resolveEpoch(1);
+        assertEq(coordinator.refundClaims(buyer), price);
+        asset.setRejectedRecipient(buyer, true);
+
+        vm.prank(buyer);
+        vm.expectRevert(EpochCoordinator.InvalidRefundReceiver.selector);
+        coordinator.claimRefund(address(0));
+        assertEq(coordinator.refundClaims(buyer), price);
+
+        vm.prank(governor);
+        vm.expectRevert(EpochCoordinator.NothingToClaim.selector);
+        coordinator.claimRefund(redirectedReceiver);
+
+        uint256 receiverBefore = asset.balanceOf(redirectedReceiver);
+        vm.prank(buyer);
+        coordinator.claimRefund(redirectedReceiver);
+        assertEq(asset.balanceOf(redirectedReceiver) - receiverBefore, price);
+        assertEq(coordinator.refundClaims(buyer), 0);
+    }
+
     function testVaultRejectsUnsolicitedSafeTransferButAcceptsMarketDeposit() external {
         _deployMarket(address(0), 1_000 ether, buyback);
         collection.mint(alice, 1);
@@ -683,12 +845,16 @@ contract SettlementSafetyTest is Test {
     }
 
     function _deposit(address owner, uint256 tokenId, uint128 backing) private {
+        _depositFor(owner, tokenId, backing, owner);
+    }
+
+    function _depositFor(address owner, uint256 tokenId, uint128 backing, address earningsRecipient) private {
         collection.mint(owner, tokenId);
         asset.mint(owner, backing);
         vm.startPrank(owner);
         collection.approve(address(vault), tokenId);
         asset.approve(address(vault), backing);
-        market.depositPosition(address(collection), tokenId, backing, owner);
+        market.depositPosition(address(collection), tokenId, backing, earningsRecipient);
         vm.stopPrank();
     }
 

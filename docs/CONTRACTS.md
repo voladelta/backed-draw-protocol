@@ -77,7 +77,11 @@ The Crown takeover threshold is 110% of the incumbent's backing. If the incumben
 
 Selection zeroes the weighted-tree leaf and freezes the `PositionNFT`; settlement burns it before releasing funds or the underlying NFT. The frozen pull receipt remains as the historical settlement proof.
 
-Revealed settlement first converts cash payouts into owner-bound claims held by the `SettlementEngine`. A rejecting or denylisted payout recipient therefore cannot block settlement or `forceKeep`; only the claim owner can retry delivery or redirect it to another receiver. `$DRAW` settlement is different: the receipt owner supplies `minDrawOut` and route data, and the `RewardController` performs the protected swap atomically. If that swap fails, the receipt and all selected-position liabilities remain unconsumed so the owner can retry or select cash.
+Revealed settlement first converts cash payouts into owner-bound claims held by the `SettlementEngine`. A rejecting or denylisted payout recipient therefore cannot block settlement or `forceKeep`; only the claim owner can retry delivery or redirect it to another receiver. Draw-market withdrawals apply the same ownership rule independently to backing, cash earnings and the NFT: a failed delivery becomes an owner-bound settlement-asset or NFT claim and never lets the position owner redirect a distinct earnings recipient's value. Refund owners can likewise redirect delivery without transferring ownership of the claim.
+
+Active-position reward input is normally transferred to the `RewardController` and queued for a later protected `$DRAW` purchase. If that enqueue fails during withdrawal or revealed settlement, exit remains live by converting the reward input into an immediately backed, owner-bound **settlement-asset cash fallback**. `RewardFundingCashFallbackAccrued` exposes that final economic choice; it is not a retryable `$DRAW`-funding liability. `$DRAW` settlement is different: the receipt owner supplies `minDrawOut` and route data, and the `RewardController` performs the protected swap atomically. If that swap fails, the receipt and all selected-position liabilities remain unconsumed so the owner can retry or select cash.
+
+Every successful `RewardController` swap must reduce its input-token balance by exactly the accounted input and leave the remaining balance at least equal to `totalQueued`. Partial/no-pull adapters, controller-paid transfer taxes and adverse rebases revert the whole swap, including entitlement changes, token movement and allowance changes.
 
 ## Administration
 

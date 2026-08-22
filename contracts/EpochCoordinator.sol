@@ -26,6 +26,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     error EpochBoundaryPending();
     error RouterNotApproved(address router);
     error InvalidPayer(address payer, address caller);
+    error InvalidRefundReceiver();
 
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
@@ -85,6 +86,7 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     event EpochCancelled(uint256 indexed epochId);
     event EpochBoundaryAdvanced(uint256 indexed epochId, uint32 processed, bool complete);
     event PullsPaused(bool paused);
+    event RefundClaimed(address indexed claimOwner, address indexed receiver, uint256 amount);
 
     constructor(
         uint256 marketId_,
@@ -299,11 +301,21 @@ contract EpochCoordinator is AccessControl, ReentrancyGuard {
     }
 
     function claimRefund() external nonReentrant {
+        _claimRefund(msg.sender);
+    }
+
+    function claimRefund(address receiver) external nonReentrant {
+        if (receiver == address(0)) revert InvalidRefundReceiver();
+        _claimRefund(receiver);
+    }
+
+    function _claimRefund(address receiver) private {
         uint256 amount = refundClaims[msg.sender];
         if (amount == 0) revert NothingToClaim();
         refundClaims[msg.sender] = 0;
         refundLiability -= amount;
-        vault.releaseSettlement(msg.sender, amount);
+        vault.releaseSettlement(receiver, amount);
+        emit RefundClaimed(msg.sender, receiver, amount);
     }
 
     function orderCount(uint256 epochId) external view returns (uint256) {

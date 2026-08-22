@@ -6,10 +6,12 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { RewardController } from "../contracts/RewardController.sol";
 import { ISwapAdapter } from "../contracts/interfaces/ISwapAdapter.sol";
 import { MockERC20 } from "./mocks/MockERC20.sol";
+import { MockTaxedERC20 } from "./mocks/MockTaxedERC20.sol";
 
 contract RewardControllerSwapAdapter is ISwapAdapter {
     uint256 public amountOut;
     uint256 public reportedAmountOut;
+    uint256 public consumeBps = 10_000;
 
     function setAmountOut(uint256 amount) external {
         amountOut = amount;
@@ -18,6 +20,10 @@ contract RewardControllerSwapAdapter is ISwapAdapter {
 
     function setReportedAmountOut(uint256 amount) external {
         reportedAmountOut = amount;
+    }
+
+    function setConsumeBps(uint256 bps) external {
+        consumeBps = bps;
     }
 
     function swapExactOutput(address, address, uint256, uint256, address, bytes calldata)
@@ -36,7 +42,10 @@ contract RewardControllerSwapAdapter is ISwapAdapter {
         address receiver,
         bytes calldata
     ) external returns (uint256) {
-        require(IERC20(inputAsset).transferFrom(msg.sender, address(this), amountIn));
+        uint256 consumed = amountIn * consumeBps / 10_000;
+        if (consumed != 0) {
+            require(IERC20(inputAsset).transferFrom(msg.sender, address(this), consumed));
+        }
         MockERC20(outputAsset).mint(receiver, amountOut);
         return reportedAmountOut;
     }
@@ -147,5 +156,89 @@ contract RewardControllerTest is Test {
 
         assertEq(controller.queuedInput(beneficiary, address(input)), 10 ether);
         assertEq(controller.totalQueued(address(input)), 10 ether);
+    }
+
+    function testClaimRejectsPartialInputConsumptionAndRestoresEntitlement() external {
+        input.mint(address(controller), 10 ether);
+        controller.enqueue(beneficiary, address(input), 10 ether);
+        adapter.setConsumeBps(5_000);
+        adapter.setAmountOut(10 ether);
+
+        vm.prank(beneficiary);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                RewardController.InputAmountMismatch.selector, address(input), 10 ether, 5 ether
+            )
+        );
+        controller.claim(address(input), 1 ether, beneficiary, "");
+
+        assertEq(controller.queuedInput(beneficiary, address(input)), 10 ether);
+        assertEq(controller.totalQueued(address(input)), 10 ether);
+        assertEq(input.balanceOf(address(controller)), 10 ether);
+        assertEq(input.balanceOf(address(adapter)), 0);
+        assertEq(draw.balanceOf(beneficiary), 0);
+        assertEq(input.allowance(address(controller), address(adapter)), 0);
+    }
+
+    function testSettlementSwapRejectsNoInputConsumption() external {
+        input.mint(address(controller), 10 ether);
+        adapter.setConsumeBps(0);
+        adapter.setAmountOut(10 ether);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(RewardController.InputAmountMismatch.selector, address(input), 10 ether, 0)
+        );
+        controller.swapSettlement(beneficiary, address(input), 10 ether, 1 ether, "");
+
+        assertEq(input.balanceOf(address(controller)), 10 ether);
+        assertEq(input.balanceOf(address(adapter)), 0);
+        assertEq(draw.balanceOf(beneficiary), 0);
+        assertEq(input.allowance(address(controller), address(adapter)), 0);
+    }
+
+    function testControllerPaidSenderTaxCannotConsumeAnotherBeneficiaryBacking() external {
+        MockTaxedERC20 taxedInput = new MockTaxedERC20("Taxed Input", "TIN", 18);
+        RewardController taxedController =
+            new RewardController(address(this), address(draw), address(adapter));
+        taxedController.grantRole(taxedController.MARKET_ROLE(), address(this));
+        address otherBeneficiary = makeAddr("other-reward-beneficiary");
+
+        taxedInput.mint(address(taxedController), 21 ether);
+        taxedController.enqueue(beneficiary, address(taxedInput), 10 ether);
+        taxedController.enqueue(otherBeneficiary, address(taxedInput), 10 ether);
+        taxedInput.setOutboundTax(address(taxedController), 1_000, true);
+        adapter.setAmountOut(10 ether);
+
+        vm.prank(beneficiary);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                RewardController.InputAmountMismatch.selector, address(taxedInput), 10 ether, 11 ether
+            )
+        );
+        taxedController.claim(address(taxedInput), 1 ether, beneficiary, "");
+
+        assertEq(taxedController.queuedInput(beneficiary, address(taxedInput)), 10 ether);
+        assertEq(taxedController.queuedInput(otherBeneficiary, address(taxedInput)), 10 ether);
+        assertEq(taxedController.totalQueued(address(taxedInput)), 20 ether);
+        assertEq(taxedInput.balanceOf(address(taxedController)), 21 ether);
+        assertEq(taxedInput.balanceOf(address(adapter)), 0);
+        assertEq(draw.balanceOf(beneficiary), 0);
+        assertEq(taxedInput.allowance(address(taxedController), address(adapter)), 0);
+    }
+
+    function testSuccessfulClaimLeavesOtherBeneficiaryExactlyBacked() external {
+        address otherBeneficiary = makeAddr("successful-other-beneficiary");
+        input.mint(address(controller), 20 ether);
+        controller.enqueue(beneficiary, address(input), 10 ether);
+        controller.enqueue(otherBeneficiary, address(input), 10 ether);
+        adapter.setAmountOut(9 ether);
+
+        vm.prank(beneficiary);
+        controller.claim(address(input), 9 ether, beneficiary, "");
+
+        assertEq(controller.queuedInput(beneficiary, address(input)), 0);
+        assertEq(controller.queuedInput(otherBeneficiary, address(input)), 10 ether);
+        assertEq(controller.totalQueued(address(input)), 10 ether);
+        assertEq(input.balanceOf(address(controller)), 10 ether);
     }
 }

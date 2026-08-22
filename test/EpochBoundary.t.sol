@@ -141,21 +141,22 @@ contract EpochBoundaryTest is Test {
         assertEq(market.positionProbability(2), 0);
         assertFalse(market.epochBoundaryPending());
 
+        uint256 backingBefore = asset.balanceOf(bob);
         vm.prank(bob);
-        vm.expectRevert();
         market.claimWithdrawal(2, address(coordinator));
-        assertEq(uint8(_positionStatus(2)), uint8(ProtocolTypes.PositionStatus.WithdrawalClaimable));
+        assertEq(asset.balanceOf(bob) - backingBefore, 200 ether);
+        assertEq(uint8(_positionStatus(2)), uint8(ProtocolTypes.PositionStatus.Withdrawn));
+        assertEq(collection.ownerOf(2), address(market.vault()));
+        assertEq(market.pendingNFTClaims(address(collection), 2), bob);
 
         _requestPull(uint48(block.timestamp + 1 hours));
         assertEq(_epochId(), 2);
         assertEq(_activeCountSnapshot(), 2);
 
-        uint256 backingBefore = asset.balanceOf(bob);
         vm.prank(bob);
-        market.claimWithdrawal(2, bob);
-        assertEq(asset.balanceOf(bob) - backingBefore, 200 ether);
+        market.claimNFT(address(collection), 2, bob);
         assertEq(collection.ownerOf(2), bob);
-        assertEq(uint8(_positionStatus(2)), uint8(ProtocolTypes.PositionStatus.Withdrawn));
+        assertEq(market.pendingNFTClaims(address(collection), 2), address(0));
     }
 
     function testQueuedWithdrawalDefersRewardWhenControllerRejectsEnqueue() external {

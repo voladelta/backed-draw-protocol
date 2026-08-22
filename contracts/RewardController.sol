@@ -13,6 +13,8 @@ contract RewardController is AccessControl, ReentrancyGuard {
     error ZeroAmount();
     error SlippageExceeded(uint256 actual, uint256 minimum);
     error UnfundedInput(address asset, uint256 assets, uint256 liabilities);
+    error InputAmountMismatch(address asset, uint256 expected, uint256 actual);
+    error AllowanceNotCleared(address asset, address spender, uint256 remaining);
 
     bytes32 public constant MARKET_ROLE = keccak256("MARKET_ROLE");
     bytes32 public constant FACTORY_ROLE = keccak256("FACTORY_ROLE");
@@ -84,6 +86,7 @@ contract RewardController is AccessControl, ReentrancyGuard {
         IERC20(inputAsset).forceApprove(address(adapter), inputAmount);
         adapter.swapExactInput(inputAsset, drawToken, inputAmount, minDrawOut, beneficiary, routeData);
         IERC20(inputAsset).forceApprove(address(adapter), 0);
+        _verifyInputSpent(inputAsset, address(adapter), assets, inputAmount, totalQueued[inputAsset]);
         drawAmount = IERC20(drawToken).balanceOf(beneficiary) - drawBefore;
         if (drawAmount < minDrawOut) revert SlippageExceeded(drawAmount, minDrawOut);
         emit SettlementRewardPurchased(beneficiary, inputAsset, inputAmount, drawAmount);
@@ -99,12 +102,36 @@ contract RewardController is AccessControl, ReentrancyGuard {
         queuedInput[msg.sender][inputAsset] = 0;
         totalQueued[inputAsset] -= inputAmount;
         ISwapAdapter adapter = swapAdapter;
+        uint256 inputBefore = IERC20(inputAsset).balanceOf(address(this));
         uint256 drawBefore = IERC20(drawToken).balanceOf(receiver);
         IERC20(inputAsset).forceApprove(address(adapter), inputAmount);
         adapter.swapExactInput(inputAsset, drawToken, inputAmount, minDrawOut, receiver, routeData);
         IERC20(inputAsset).forceApprove(address(adapter), 0);
+        _verifyInputSpent(inputAsset, address(adapter), inputBefore, inputAmount, totalQueued[inputAsset]);
         drawAmount = IERC20(drawToken).balanceOf(receiver) - drawBefore;
         if (drawAmount < minDrawOut) revert SlippageExceeded(drawAmount, minDrawOut);
         emit RewardClaimed(msg.sender, receiver, inputAsset, inputAmount, drawAmount);
+    }
+
+    function _verifyInputSpent(
+        address inputAsset,
+        address adapter,
+        uint256 balanceBefore,
+        uint256 expectedSpent,
+        uint256 remainingLiability
+    ) private view {
+        IERC20 input = IERC20(inputAsset);
+        uint256 remainingAllowance = input.allowance(address(this), adapter);
+        if (remainingAllowance != 0) {
+            revert AllowanceNotCleared(inputAsset, adapter, remainingAllowance);
+        }
+        uint256 balanceAfter = input.balanceOf(address(this));
+        uint256 actualSpent = balanceBefore >= balanceAfter ? balanceBefore - balanceAfter : 0;
+        if (actualSpent != expectedSpent) {
+            revert InputAmountMismatch(inputAsset, expectedSpent, actualSpent);
+        }
+        if (balanceAfter < remainingLiability) {
+            revert UnfundedInput(inputAsset, balanceAfter, remainingLiability);
+        }
     }
 }

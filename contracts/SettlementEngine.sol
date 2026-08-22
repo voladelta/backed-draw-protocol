@@ -83,7 +83,7 @@ contract SettlementEngine is ReentrancyGuard {
     );
     event SettlementPayoutAccrued(address indexed claimOwner, uint256 amount);
     event SettlementPayoutClaimed(address indexed claimOwner, address indexed receiver, uint256 amount);
-    event RewardFundingDeferred(address indexed beneficiary, uint256 amount);
+    event RewardFundingCashFallbackAccrued(address indexed beneficiary, uint256 amount);
 
     constructor(
         address market_,
@@ -336,7 +336,7 @@ contract SettlementEngine is ReentrancyGuard {
         try this.dispatchReward(position.earningsRecipient, position.rewardInput) { }
         catch {
             _accrueSettlementClaim(position.earningsRecipient, position.rewardInput);
-            emit RewardFundingDeferred(position.earningsRecipient, position.rewardInput);
+            emit RewardFundingCashFallbackAccrued(position.earningsRecipient, position.rewardInput);
         }
     }
 

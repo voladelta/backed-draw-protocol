@@ -905,6 +905,12 @@ A permissionless executor periodically:
 3. swaps market settlement asset into `$DRAW`;
 4. allocates `$DRAW` through the per-position accumulator.
 
+When a position exits, accrued reward-purchase input is normally queued to the position's earnings
+recipient for a later protected `$DRAW` purchase. If that queue operation fails, the exit must remain
+live: the same amount becomes an exactly backed, owner-bound claim in the market settlement asset.
+This is a final cash fallback, not a retryable `$DRAW`-funding liability. Only the earnings recipient
+may redirect its delivery.
+
 ETH markets buy through `$DRAW/WETH`.
 
 USDG markets buy through `$DRAW/USDG` or route through the deeper canonical pool.

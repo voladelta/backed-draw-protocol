@@ -31,6 +31,8 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     error IntakePaused();
     error NothingToClaim();
     error EpochBoundaryPending();
+    error NotNFTClaimOwner();
+    error NFTClaimAlreadyExists();
 
     struct WithdrawalClaim {
         address owner;
@@ -117,6 +119,7 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     bool public epochLocked;
     bool public boundaryActive;
     bool private _initialized;
+    mapping(address collection => mapping(uint256 tokenId => address owner)) public pendingNFTClaims;
 
     event CollectionStatusUpdated(address indexed collection, bool enabled);
     event DepositsPaused(bool paused);
@@ -156,7 +159,15 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         uint256 activationRemaining
     );
     event EpochBoundaryCompleted();
-    event RewardFundingDeferred(address indexed beneficiary, uint256 amount);
+    event RewardFundingCashFallbackAccrued(address indexed beneficiary, uint256 amount);
+    event SettlementPayoutAccrued(address indexed claimOwner, uint256 amount);
+    event SettlementPayoutClaimed(address indexed claimOwner, address indexed receiver, uint256 amount);
+    event WithdrawalNFTDeliveryDeferred(
+        address indexed collection, uint256 indexed tokenId, address indexed claimOwner
+    );
+    event WithdrawalNFTClaimed(
+        address indexed collection, uint256 indexed tokenId, address indexed claimOwner, address receiver
+    );
 
     constructor() {
         _initialized = true;
@@ -422,13 +433,11 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         backingLiability -= claim.backing;
         earningsLiability -= claim.cashEarnings;
         rewardInputLiability -= claim.rewardInput;
-        vault.releaseSettlement(claim.owner, claim.backing);
-        if (claim.cashEarnings != 0) {
-            vault.releaseSettlement(claim.earningsRecipient, claim.cashEarnings);
-        }
+        _deliverSettlementOrAccrue(claim.owner, claim.owner, claim.backing);
+        _deliverSettlementOrAccrue(claim.earningsRecipient, claim.earningsRecipient, claim.cashEarnings);
         _fundRewardOrAccrue(claim.earningsRecipient, claim.rewardInput);
         ProtocolTypes.Position storage position = positions[positionId];
-        vault.releaseNFT(nftReceiver, position.collection, position.tokenId);
+        _deliverNFTOrDefer(claim.owner, nftReceiver, position.collection, position.tokenId);
         emit PositionWithdrawn(positionId, claim.owner, claim.backing, claim.cashEarnings, claim.rewardInput);
         _assertSolvent();
     }
@@ -568,12 +577,30 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
     }
 
     function claimSettlement() external nonReentrant {
+        _claimSettlement(msg.sender);
+    }
+
+    function claimSettlement(address receiver) external nonReentrant {
+        if (receiver == address(0)) revert ZeroAddress();
+        _claimSettlement(receiver);
+    }
+
+    function _claimSettlement(address receiver) private {
         uint256 amount = settlementClaims[msg.sender];
         if (amount == 0) revert NothingToClaim();
         settlementClaims[msg.sender] = 0;
         settlementClaimLiability -= amount;
-        vault.releaseSettlement(msg.sender, amount);
+        vault.releaseSettlement(receiver, amount);
+        emit SettlementPayoutClaimed(msg.sender, receiver, amount);
         _assertSolvent();
+    }
+
+    function claimNFT(address collection, uint256 tokenId, address receiver) external nonReentrant {
+        if (receiver == address(0)) revert ZeroAddress();
+        if (pendingNFTClaims[collection][tokenId] != msg.sender) revert NotNFTClaimOwner();
+        delete pendingNFTClaims[collection][tokenId];
+        vault.releaseNFT(receiver, collection, tokenId);
+        emit WithdrawalNFTClaimed(collection, tokenId, msg.sender, receiver);
     }
 
     function claimProtocolRevenue() external onlyRole(GOVERNOR_ROLE) nonReentrant {
@@ -744,10 +771,10 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         earningsLiability -= cash;
         rewardInputLiability -= rewardInput;
         positionToken.burn(positionId);
-        vault.releaseSettlement(owner, backing);
-        if (cash != 0) vault.releaseSettlement(position.earningsRecipient, cash);
+        _deliverSettlementOrAccrue(owner, owner, backing);
+        _deliverSettlementOrAccrue(position.earningsRecipient, position.earningsRecipient, cash);
         _fundRewardOrAccrue(position.earningsRecipient, rewardInput);
-        vault.releaseNFT(nftReceiver, position.collection, position.tokenId);
+        _deliverNFTOrDefer(owner, nftReceiver, position.collection, position.tokenId);
         emit PositionWithdrawn(positionId, owner, backing, cash, rewardInput);
     }
 
@@ -755,10 +782,32 @@ contract DrawMarket is AccessControl, ReentrancyGuard {
         if (amount == 0) return;
         try settlementEngine.dispatchMarketReward(beneficiary, amount) { }
         catch {
-            settlementClaims[beneficiary] += amount;
-            settlementClaimLiability += amount;
-            emit RewardFundingDeferred(beneficiary, amount);
+            _accrueSettlementClaim(beneficiary, amount);
+            emit RewardFundingCashFallbackAccrued(beneficiary, amount);
         }
+    }
+
+    function _deliverSettlementOrAccrue(address claimOwner, address receiver, uint256 amount) private {
+        if (amount == 0) return;
+        try vault.releaseSettlement(receiver, amount) { }
+        catch {
+            _accrueSettlementClaim(claimOwner, amount);
+        }
+    }
+
+    function _accrueSettlementClaim(address claimOwner, uint256 amount) private {
+        settlementClaims[claimOwner] += amount;
+        settlementClaimLiability += amount;
+        emit SettlementPayoutAccrued(claimOwner, amount);
+    }
+
+    function _deliverNFTOrDefer(address claimOwner, address receiver, address collection, uint256 tokenId)
+        private
+    {
+        if (vault.tryReleaseNFT(receiver, collection, tokenId)) return;
+        if (pendingNFTClaims[collection][tokenId] != address(0)) revert NFTClaimAlreadyExists();
+        pendingNFTClaims[collection][tokenId] = claimOwner;
+        emit WithdrawalNFTDeliveryDeferred(collection, tokenId, claimOwner);
     }
 
     function _activate(uint256 positionId, ProtocolTypes.Position storage position) private {

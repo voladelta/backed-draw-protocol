@@ -477,6 +477,7 @@ contract ProtocolHandler is Test {
         if (!market.epochLocked() && market.activePositionCount() >= market.maxActivePositions()) return;
         uint128 backing = (MIN_BACKING + backingSeed % (MAX_BACKING - MIN_BACKING + 1)).toUint128();
         uint256 tokenId = nextTokenId++;
+        rejectingReceiver.setRejects(false);
         collection.mint(address(rejectingReceiver), tokenId);
         vm.startPrank(address(rejectingReceiver));
         collection.approve(address(vault), tokenId);

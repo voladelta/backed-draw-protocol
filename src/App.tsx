@@ -10,6 +10,7 @@ import {
 import { useEffect } from "react"
 import { AppShell } from "@/components/shell"
 import { PullExperience } from "@/components/pull/pull-experience"
+import { LeaderboardPage } from "@/components/leaderboard/leaderboard-page"
 import {
   ActivityPage,
   BackerPage,
@@ -26,6 +27,7 @@ const routeTitles: Record<string, string> = {
   "/pools": "Pools",
   "/activity": "Activity",
   "/backer": "Backer",
+  "/leaderboard": "Leaderboard",
   "/rewards": "Rewards",
   "/how-it-works": "How it works",
 }
@@ -46,6 +48,12 @@ function RootLayout() {
       href: "/backer",
       active: pathname === "/backer",
       onClick: () => navigate({ to: "/backer" }),
+    },
+    {
+      label: "Leaderboard",
+      href: "/leaderboard",
+      active: pathname === "/leaderboard",
+      onClick: () => navigate({ to: "/leaderboard" }),
     },
     {
       label: "Rewards",
@@ -132,6 +140,11 @@ const backerRoute = createRoute({
   path: "/backer",
   component: BackerRoute,
 })
+const leaderboardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/leaderboard",
+  component: LeaderboardPage,
+})
 const rewardsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/rewards",
@@ -147,6 +160,7 @@ const routeTree = rootRoute.addChildren([
   poolsRoute,
   activityRoute,
   backerRoute,
+  leaderboardRoute,
   rewardsRoute,
   howItWorksRoute,
 ])
